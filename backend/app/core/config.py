@@ -1,3 +1,20 @@
+"""
+應用程式配置管理模組
+
+功能：
+- 載入環境變數
+- 定義應用程式設定
+- 管理 API 配置
+- 處理 CORS 設定
+- 管理 LLM 服務配置
+
+配置項目：
+- API_PREFIX: API 路徑前綴
+- CORS_ALLOW_ORIGINS: 允許的 CORS 來源
+- MODEL_PROVIDER: LLM 服務提供商
+- OPENAI_API_KEY: OpenAI API 金鑰
+"""
+
 import os
 from typing import List, Optional
 from dotenv import load_dotenv
@@ -5,8 +22,13 @@ load_dotenv()
 
 class Settings:
     API_PREFIX: str = "/api/v1"
-    CORS_ALLOW_ORIGINS: List[str] = ["*"]  # change to whitelist in prod
-    MODEL_PROVIDER: str = os.getenv("MODEL_PROVIDER", "mock")
+    CORS_ALLOW_ORIGINS: List[str] = ["*"]
+    
+    # LLM 提供商配置
+    MODEL_PROVIDER: str = os.getenv("MODEL_PROVIDER", "fallback")
     OPENAI_API_KEY: Optional[str] = os.getenv("OPENAI_API_KEY")
+    ANTHROPIC_API_KEY: Optional[str] = os.getenv("ANTHROPIC_API_KEY")
+    OLLAMA_URL: str = os.getenv("OLLAMA_URL", "http://localhost:11434")
+    OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL", "llama2")
 
 settings = Settings()
