@@ -28,6 +28,11 @@ from ..core.config import settings
 from typing import Optional
 import random
 import json
+import os
+from typing import Optional
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # 延遲載入 openai 客戶端，避免缺依賴時整體崩潰
 _openai_client = None
@@ -229,33 +234,42 @@ def call_openai_for_prediction(description_s1: str, description_s2: str, prompt_
 
 
 def call_openrouter_deepseek(description_s1: str, description_s2: str, prompt_style: Optional[str] = None) -> dict:
-    """使用 OpenRouter 調用 DeepSeek 模型"""
-    if not settings.OPENROUTER_API_KEY:
-        raise ValueError("OpenRouter API key not configured")
+    """使用 OpenRouter 調用 DeepSeek 模型（.env 版）"""
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    if not api_key:
+        print("⚠️ OpenRouter API key 未設定，改用備用預測邏輯")
+        return fallback_prediction(description_s1, description_s2)
+
+    site_url = os.getenv("OPENROUTER_SITE_URL", "")  # 可留空
+    site_name = os.getenv("OPENROUTER_SITE_NAME", "RPS Observer")
 
     prompt = _build_prompt(description_s1, description_s2, prompt_style)
-    client = _ensure_openai_client(
-        base_url="https://openrouter.ai/api/v1",
-        api_key=settings.OPENROUTER_API_KEY,
-    )
-    resp = client.chat.completions.create(
-        extra_headers={
-            "HTTP-Referer": settings.OPENROUTER_SITE_URL or "",
-            "X-Title": settings.OPENROUTER_SITE_NAME or "RPS Observer",
-        },
-        extra_body={},
-        model="deepseek/deepseek-r1-0528:free",
-        messages=[
-            {"role": "user", "content": prompt},
-        ],
-        temperature=0.3,
-        max_tokens=500,
-    )
-    content = resp.choices[0].message.content
-    parsed = _parse_json_from_text(content)
-    if parsed:
-        return parsed
-    return fallback_prediction(description_s1, description_s2)
+
+    # ⚠️ 不使用全域快取；每次為 OpenRouter 建立新 client，避免 base_url 被舊 client 影響
+    from openai import OpenAI
+    client = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=api_key)
+
+    try:
+        resp = client.chat.completions.create(
+            extra_headers={
+                "HTTP-Referer": site_url,
+                "X-Title": site_name,
+            },
+            extra_body={},
+            model="deepseek/deepseek-r1-0528:free",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+            max_tokens=500,
+        )
+        content = resp.choices[0].message.content
+        parsed = _parse_json_from_text(content)
+        if parsed:
+            return parsed
+        return fallback_prediction(description_s1, description_s2)
+    except Exception as e:
+        print(f"❌ OpenRouter 調用失敗，使用備用邏輯: {e}")
+        return fallback_prediction(description_s1, description_s2)
+
 
 
 # 主要的預測函數，加入 model 參數以切換
@@ -315,3 +329,8 @@ def decide_next_move(history, k_window=5, belief=None):
     top = max(set(opp_moves), key=opp_moves.count)
     move = (top + 1) % 3
     return move, "Counter most frequent opponent move."
+
+# for test
+if __name__ == "__main__":
+    result = call_openrouter_deepseek("固定出石頭", "隨機出拳")
+    print(result)

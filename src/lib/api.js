@@ -41,6 +41,15 @@ export async function observerPredict(body) {
   return res.json();
 }
 
+export async function observerRun(body) {
+  const res = await fetch('/api/v1/observer/run', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
 export async function playerAct(body) {
   const res = await fetch('/api/v1/player/act', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },

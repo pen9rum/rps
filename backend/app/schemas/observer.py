@@ -8,7 +8,7 @@
 """
 
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List, Dict
 
 class ObserverPredictReq(BaseModel):
     """觀察者預測請求模型"""
@@ -27,3 +27,35 @@ class ObserverPredictResp(BaseModel):
     draw: float
     confidence: float
     reasoning: Optional[str] = None  # 推理過程
+
+
+class ObserverRunReq(BaseModel):
+    """觀察者連續觀察請求"""
+    true_strategy1: str
+    true_strategy2: str
+    rounds: int = 50
+    k_window: Optional[int] = None
+    model: Optional[str] = None  # 'deepseek' | '4o-mini'
+
+
+class RoundPrediction(BaseModel):
+    """單輪預測與結果紀錄"""
+    round: int
+    win: float
+    loss: float
+    draw: float
+    confidence: float
+    move1: int
+    move2: int
+    result: int  # 1=win, 0=draw, -1=loss（對真實策略1而言）
+
+
+class ObserverRunResp(BaseModel):
+    """觀察者連續觀察回應"""
+    model: Optional[str] = None
+    true_strategy1: str
+    true_strategy2: str
+    rounds: int
+    k_window: Optional[int] = None
+    per_round: List[RoundPrediction]
+    summary: Dict[str, float]  # {win, loss, draw, win_rate, loss_rate, draw_rate}
