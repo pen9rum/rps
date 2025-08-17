@@ -27,12 +27,22 @@ LLM 服務整合模組
 from ..core.config import settings
 from typing import Optional
 import random
-import openai
 import json
 
-# 設定 OpenAI API
-if settings.OPENAI_API_KEY:
-    openai.api_key = settings.OPENAI_API_KEY
+# 延遲載入 openai 客戶端，避免缺依賴時整體崩潰
+_openai_client = None
+
+
+def _ensure_openai_client(base_url: Optional[str] = None, api_key: Optional[str] = None):
+    global _openai_client
+    if _openai_client is None:
+        try:
+            from openai import OpenAI
+        except Exception as e:
+            raise RuntimeError(f"openai 套件未安裝或導入失敗: {e}")
+        _openai_client = OpenAI(base_url=base_url, api_key=api_key)
+    return _openai_client
+
 
 def analyze_strategy(description: str) -> dict:
     """分析策略描述，返回策略特徵"""
@@ -81,6 +91,7 @@ def analyze_strategy(description: str) -> dict:
     
     return features
 
+
 def predict_matchup(s1_features: dict, s2_features: dict) -> dict:
     """根據兩個策略的特徵預測對戰結果"""
     
@@ -90,11 +101,6 @@ def predict_matchup(s1_features: dict, s2_features: dict) -> dict:
     s1_draw = 0.0
     
     # 石頭剪刀布的勝負矩陣
-    # s1_rock vs s2_scissors = s1_win
-    # s1_rock vs s2_rock = draw
-    # s1_rock vs s2_paper = s1_loss
-    # 等等...
-    
     s1_win += s1_features['rock_freq'] * s2_features['scissors_freq']  # 石頭勝剪刀
     s1_win += s1_features['paper_freq'] * s2_features['rock_freq']     # 布勝石頭
     s1_win += s1_features['scissors_freq'] * s2_features['paper_freq'] # 剪刀勝布
@@ -126,6 +132,7 @@ def predict_matchup(s1_features: dict, s2_features: dict) -> dict:
         'draw': round(s1_draw, 3)
     }
 
+
 def estimate_confidence(s1_features: dict, s2_features: dict, prediction: dict) -> float:
     """估計預測的信心度"""
     base_confidence = 0.6
@@ -146,14 +153,10 @@ def estimate_confidence(s1_features: dict, s2_features: dict, prediction: dict) 
     
     return min(0.95, max(0.3, base_confidence))
 
-def call_openai_for_prediction(description_s1: str, description_s2: str, prompt_style: Optional[str] = None) -> dict:
-    """使用 OpenAI API 進行預測"""
-    if not settings.OPENAI_API_KEY:
-        raise ValueError("OpenAI API key not configured")
-    
-    # 構建 prompt
+
+def _build_prompt(description_s1: str, description_s2: str, prompt_style: Optional[str] = None) -> str:
     if prompt_style == "analytical":
-        prompt = f"""
+        return f"""
 你是一個石頭剪刀布遊戲的專家分析師。請分析以下兩個策略的對戰結果：
 
 策略1: {description_s1}
@@ -170,7 +173,7 @@ def call_openai_for_prediction(description_s1: str, description_s2: str, prompt_
 請確保 win + loss + draw = 1
 """
     else:
-        prompt = f"""
+        return f"""
 在石頭剪刀布遊戲中，策略1是"{description_s1}"，策略2是"{description_s2}"。
 
 請預測策略1對戰策略2的結果，並以JSON格式回答：
@@ -183,46 +186,110 @@ def call_openai_for_prediction(description_s1: str, description_s2: str, prompt_
 }}
 """
 
+
+def _parse_json_from_text(content: str) -> Optional[dict]:
     try:
-        response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "你是一個石頭剪刀布遊戲分析專家。請提供準確的預測和清晰的推理。"},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.3,
-            max_tokens=500
-        )
-        
-        # 解析回應
-        content = response.choices[0].message.content
-        # 嘗試提取 JSON
-        try:
-            # 尋找 JSON 部分
-            start = content.find('{')
-            end = content.rfind('}') + 1
-            if start != -1 and end != 0:
-                json_str = content[start:end]
-                result = json.loads(json_str)
-                
-                # 驗證和正規化結果
-                total = result.get('win', 0) + result.get('loss', 0) + result.get('draw', 0)
-                if total > 0:
-                    result['win'] = round(result.get('win', 0) / total, 3)
-                    result['loss'] = round(result.get('loss', 0) / total, 3)
-                    result['draw'] = round(result.get('draw', 0) / total, 3)
-                
-                result['confidence'] = min(1.0, max(0.0, result.get('confidence', 0.6)))
-                return result
-            else:
-                raise ValueError("No JSON found in response")
-        except (json.JSONDecodeError, ValueError):
-            # 如果 JSON 解析失敗，使用 fallback
-            return fallback_prediction(description_s1, description_s2)
-            
-    except Exception as e:
-        print(f"OpenAI API error: {e}")
+        start = content.find('{')
+        end = content.rfind('}') + 1
+        if start != -1 and end > start:
+            data = json.loads(content[start:end])
+            total = data.get('win', 0) + data.get('loss', 0) + data.get('draw', 0)
+            if total > 0:
+                data['win'] = round(data.get('win', 0) / total, 3)
+                data['loss'] = round(data.get('loss', 0) / total, 3)
+                data['draw'] = round(data.get('draw', 0) / total, 3)
+            data['confidence'] = min(1.0, max(0.0, data.get('confidence', 0.6)))
+            return data
+    except Exception:
+        pass
+    return None
+
+
+def call_openai_for_prediction(description_s1: str, description_s2: str, prompt_style: Optional[str] = None) -> dict:
+    """使用 OpenAI (官方) chat.completions 進行預測"""
+    if not settings.OPENAI_API_KEY:
+        raise ValueError("OpenAI API key not configured")
+
+    prompt = _build_prompt(description_s1, description_s2, prompt_style)
+    client = _ensure_openai_client(api_key=settings.OPENAI_API_KEY)
+    resp = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": "你是一個石頭剪刀布遊戲分析專家。請提供準確的預測和清晰的推理。"},
+            {"role": "user", "content": prompt},
+        ],
+        temperature=0.3,
+        max_tokens=500,
+    )
+    content = resp.choices[0].message.content
+    parsed = _parse_json_from_text(content)
+    if parsed:
+        return parsed
+    return fallback_prediction(description_s1, description_s2)
+
+
+def call_openrouter_deepseek(description_s1: str, description_s2: str, prompt_style: Optional[str] = None) -> dict:
+    """使用 OpenRouter 調用 DeepSeek 模型"""
+    if not settings.OPENROUTER_API_KEY:
+        raise ValueError("OpenRouter API key not configured")
+
+    prompt = _build_prompt(description_s1, description_s2, prompt_style)
+    client = _ensure_openai_client(
+        base_url="https://openrouter.ai/api/v1",
+        api_key=settings.OPENROUTER_API_KEY,
+    )
+    resp = client.chat.completions.create(
+        extra_headers={
+            "HTTP-Referer": settings.OPENROUTER_SITE_URL or "",
+            "X-Title": settings.OPENROUTER_SITE_NAME or "RPS Observer",
+        },
+        extra_body={},
+        model="deepseek/deepseek-r1-0528:free",
+        messages=[
+            {"role": "user", "content": prompt},
+        ],
+        temperature=0.3,
+        max_tokens=500,
+    )
+    content = resp.choices[0].message.content
+    parsed = _parse_json_from_text(content)
+    if parsed:
+        return parsed
+    return fallback_prediction(description_s1, description_s2)
+
+
+# 主要的預測函數，加入 model 參數以切換
+
+def estimate_payoff(description_s1: str, description_s2: str, prompt_style: Optional[str] = None, model: Optional[str] = None):
+    """根據策略描述預測對戰結果，支援 model 選擇（'deepseek' 或 '4o-mini'），預設遵循環境設定。"""
+    # 沒有任何外部金鑰時，直接 fallback
+    has_openai = bool(settings.OPENAI_API_KEY)
+    has_openrouter = bool(settings.OPENROUTER_API_KEY)
+    if not (has_openai or has_openrouter):
+        print("⚠️ 警告: 未設定任何 API 金鑰，使用備用預測邏輯")
         return fallback_prediction(description_s1, description_s2)
+
+    # 依使用者指定或預設提供商選擇
+    selected = (model or '').lower().strip()
+    try:
+        if selected in ("deepseek", "deepseek-r1", "deepseek-r1-free"):
+            return call_openrouter_deepseek(description_s1, description_s2, prompt_style)
+        if selected in ("4o-mini", "gpt-4o-mini", "openai"):
+            return call_openai_for_prediction(description_s1, description_s2, prompt_style)
+
+        # 未指定時，依環境走
+        provider = (settings.MODEL_PROVIDER or "").lower()
+        if provider in ("openai", "gpt-4o-mini") and has_openai:
+            return call_openai_for_prediction(description_s1, description_s2, prompt_style)
+        if provider in ("openrouter", "deepseek") and has_openrouter:
+            return call_openrouter_deepseek(description_s1, description_s2, prompt_style)
+
+        # 任何情況不可用則 fallback
+        return fallback_prediction(description_s1, description_s2)
+    except Exception as e:
+        print(f"❌ LLM 調用失敗，使用備用邏輯: {e}")
+        return fallback_prediction(description_s1, description_s2)
+
 
 def fallback_prediction(description_s1: str, description_s2: str) -> dict:
     """當 OpenAI API 失敗時的備用預測"""
@@ -240,26 +307,6 @@ def fallback_prediction(description_s1: str, description_s2: str) -> dict:
         "reasoning": "使用備用分析邏輯"
     }
 
-# 主要的預測函數
-def estimate_payoff(description_s1: str, description_s2: str, prompt_style: Optional[str] = None):
-    """根據策略描述預測對戰結果"""
-    
-    # 檢查是否有 OpenAI API 配置
-    if not settings.OPENAI_API_KEY:
-        print("⚠️ 警告: 未設定 OPENAI_API_KEY，使用備用預測邏輯")
-        return fallback_prediction(description_s1, description_s2)
-    
-    # 檢查是否啟用 OpenAI
-    if settings.MODEL_PROVIDER != "openai":
-        print(f"⚠️ 警告: MODEL_PROVIDER 設定為 '{settings.MODEL_PROVIDER}'，使用備用預測邏輯")
-        return fallback_prediction(description_s1, description_s2)
-    
-    # 嘗試使用 OpenAI API
-    try:
-        return call_openai_for_prediction(description_s1, description_s2, prompt_style)
-    except Exception as e:
-        print(f"❌ OpenAI API 失敗，使用備用邏輯: {e}")
-        return fallback_prediction(description_s1, description_s2)
 
 def decide_next_move(history, k_window=5, belief=None):
     # Simple heuristic placeholder; replace with real LLM policy

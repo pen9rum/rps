@@ -18,6 +18,7 @@ class ObserverPredictReq(BaseModel):
     strategy1: Optional[str] = None       # 策略1代碼 (如 'A', 'B', 'X')
     strategy2: Optional[str] = None       # 策略2代碼 (如 'A', 'B', 'X')
     prompt_style: Optional[str] = None    # 提示風格
+    model: Optional[str] = None           # 模型名稱（例如 'deepseek', '4o-mini'）
 
 class ObserverPredictResp(BaseModel):
     """觀察者預測回應模型"""
