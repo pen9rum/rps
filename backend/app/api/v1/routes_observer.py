@@ -44,7 +44,7 @@ def observer_predict(req: ObserverPredictReq):
     
     # 調用 LLM 服務進行預測
     try:
-        result = estimate_payoff(description_s1, description_s2, req.prompt_style)
+        result = estimate_payoff(description_s1, description_s2, req.prompt_style, req.model)
         return ObserverPredictResp(**result)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"預測失敗: {str(e)}")

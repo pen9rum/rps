@@ -30,5 +30,10 @@ class Settings:
     ANTHROPIC_API_KEY: Optional[str] = os.getenv("ANTHROPIC_API_KEY")
     OLLAMA_URL: str = os.getenv("OLLAMA_URL", "http://localhost:11434")
     OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL", "llama2")
+    
+    # OpenRouter / DeepSeek 設定
+    OPENROUTER_API_KEY: Optional[str] = os.getenv("OPENROUTER_API_KEY")
+    OPENROUTER_SITE_URL: Optional[str] = os.getenv("OPENROUTER_SITE_URL")
+    OPENROUTER_SITE_NAME: Optional[str] = os.getenv("OPENROUTER_SITE_NAME")
 
 settings = Settings()

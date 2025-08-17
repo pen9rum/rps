@@ -28,6 +28,9 @@ const ObserverDemo = () => {
   const [predStrategy1, setPredStrategy1] = useState('A');
   const [predStrategy2, setPredStrategy2] = useState('B');
   
+  // 模型選擇
+  const [model, setModel] = useState('deepseek'); // 'deepseek' | '4o-mini'
+  
   // 結果
   const [observerResult, setObserverResult] = useState(null);
   const [evaluationResult, setEvaluationResult] = useState(null);
@@ -53,7 +56,8 @@ const ObserverDemo = () => {
     try {
       const result = await observerPredict({
         strategy1: predStrategy1,
-        strategy2: predStrategy2
+        strategy2: predStrategy2,
+        model, // 傳給後端
       });
       setObserverResult(result);
       
@@ -116,6 +120,22 @@ const ObserverDemo = () => {
           {error}
         </div>
       )}
+
+      {/* 模型選擇 */}
+      <div className="mb-6 p-4 bg-gray-50 rounded">
+        <label className="block text-sm font-medium mb-2">選擇模型</label>
+        <select
+          className="w-full p-2 border rounded max-w-xs"
+          value={model}
+          onChange={(e) => setModel(e.target.value)}
+        >
+          <option value="deepseek">DeepSeek (OpenRouter)</option>
+          <option value="4o-mini">GPT-4o mini (OpenAI)</option>
+        </select>
+        <div className="text-xs text-gray-500 mt-2">
+          若未設定對應 API 金鑰，系統將自動改用備用邏輯。
+        </div>
+      </div>
 
       {/* 策略選擇區域 */}
       <div className="mb-8 p-6 bg-gray-50 rounded-lg">
@@ -285,9 +305,10 @@ const ObserverDemo = () => {
         <div className="text-sm text-gray-700 space-y-1">
           <div>1. 選擇真實對戰的兩個策略（Actual A/B）</div>
           <div>2. 選擇 Observer 預測的兩個策略（Pred A/B）</div>
-          <div>3. 點擊「Observer 預測」讓 LLM 預測對戰結果</div>
-          <div>4. 點擊「評估預測」計算損失函數</div>
-          <div>5. 點擊「評估矩陣」計算完整矩陣的標準化損失</div>
+          <div>3. 選擇要使用的模型（DeepSeek 或 GPT-4o mini）</div>
+          <div>4. 點擊「Observer 預測」讓 LLM 預測對戰結果</div>
+          <div>5. 點擊「評估預測」計算損失函數</div>
+          <div>6. 點擊「評估矩陣」計算完整矩陣的標準化損失</div>
         </div>
       </div>
     </div>
