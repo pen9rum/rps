@@ -14,6 +14,53 @@ import {
   observerRun
 } from '../lib/api.js';
 
+// 簡易折線圖元件（無第三方依賴，使用 SVG）
+const LossLineChart = ({ points, width = 720, height = 240, label = 'union loss' }) => {
+  // points: Array<{x:number, y:number}>
+  const data = Array.isArray(points) ? points : [];
+  if (data.length === 0) {
+    return (
+      <div className="w-full h-40 flex items-center justify-center text-sm text-gray-500">
+        無可繪製的資料
+      </div>
+    );
+  }
+  const pad = 32;
+  const xs = data.map(d => d.x);
+  const ys = data.map(d => d.y);
+  const minX = Math.min(...xs);
+  const maxX = Math.max(...xs);
+  const minY = Math.min(...ys);
+  const maxY = Math.max(...ys);
+  const dx = Math.max(1e-9, maxX - minX);
+  const dy = Math.max(1e-9, maxY - minY);
+  const sx = x => pad + (x - minX) / dx * (width - 2 * pad);
+  const sy = y => height - pad - (y - minY) / dy * (height - 2 * pad);
+  const dStr = data.map(p => `${sx(p.x)},${sy(p.y)}`).join(' ');
+  const gridY = Array.from({ length: 4 }, (_, i) => minY + dy * i / 3);
+  return (
+    <svg width={width} height={height} className="bg-white rounded border border-gray-200">
+      {/* grid */}
+      {gridY.map((gy, i) => (
+        <line key={i} x1={pad} x2={width - pad} y1={sy(gy)} y2={sy(gy)} stroke="#e5e7eb" strokeWidth="1" />
+      ))}
+      {/* axes */}
+      <line x1={pad} y1={pad} x2={pad} y2={height - pad} stroke="#9ca3af" />
+      <line x1={pad} y1={height - pad} x2={width - pad} y2={height - pad} stroke="#9ca3af" />
+      {/* polyline */}
+      <polyline points={dStr} fill="none" stroke="#2563eb" strokeWidth="2.5" />
+      {/* points */}
+      {data.map((p, i) => (
+        <circle key={i} cx={sx(p.x)} cy={sy(p.y)} r={2.5} fill="#2563eb" />
+      ))}
+      {/* labels */}
+      <text x={pad} y={16} fill="#374151" fontSize="12" fontWeight="600">{label}</text>
+      <text x={8} y={pad} fill="#6b7280" fontSize="10">{maxY.toFixed(3)}</text>
+      <text x={8} y={height - pad} fill="#6b7280" fontSize="10">{minY.toFixed(3)}</text>
+    </svg>
+  );
+};
+
 const ObserverDemo = () => {
   // 狀態管理
   const [strategies, setStrategies] = useState({});
@@ -164,6 +211,27 @@ const ObserverDemo = () => {
         </button>
       </div>
 
+      {/* 彙總統計（更新：最終猜測與趨勢） */}
+      {runResult && (
+        <div className="mb-6 p-4 bg-green-50 border border-green-200 rounded">
+          <h3 className="text-lg font-semibold mb-2">📊 彙總統計</h3>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
+            <div>最終猜測：S1 → {runResult.final_guess?.s1 || '—'}，S2 → {runResult.final_guess?.s2 || '—'}</div>
+            <div>當前 loss：{runResult.trend?.last != null ? runResult.trend.last.toFixed(4) : '—'}</div>
+            <div>歷史最小：{runResult.trend?.min != null ? runResult.trend.min.toFixed(4) : '—'}</div>
+          </div>
+          {/* 新增：loss 折線圖 */}
+          <div className="mt-4">
+            {(() => {
+              const pts = (runResult.per_round || [])
+                .filter(r => r.union_loss != null)
+                .map(r => ({ x: r.round, y: r.union_loss }));
+              return <LossLineChart points={pts} />;
+            })()}
+          </div>
+        </div>
+      )}
+
       {/* 逐輪結果（更新：顯示辨識與 union loss） */}
       {runResult && (
         <div className="mb-6 p-4 bg-blue-50 border border-blue-200 rounded">
@@ -206,17 +274,7 @@ const ObserverDemo = () => {
         </div>
       )}
 
-      {/* 彙總統計（更新：最終猜測與趨勢） */}
-      {runResult && (
-        <div className="mb-6 p-4 bg-green-50 border border-green-200 rounded">
-          <h3 className="text-lg font-semibold mb-2">📊 彙總統計</h3>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
-            <div>最終猜測：S1 → {runResult.final_guess?.s1 || '—'}，S2 → {runResult.final_guess?.s2 || '—'}</div>
-            <div>當前 loss：{runResult.trend?.last != null ? runResult.trend.last.toFixed(4) : '—'}</div>
-            <div>歷史最小：{runResult.trend?.min != null ? runResult.trend.min.toFixed(4) : '—'}</div>
-          </div>
-        </div>
-      )}
+      
 
       {/* 矩陣結果預覽 */}
       {false && <div />}
