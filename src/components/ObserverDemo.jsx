@@ -73,7 +73,7 @@ const ObserverDemo = () => {
   
   // 模型與回合設定
   const [model, setModel] = useState('deepseek'); // 'deepseek' | '4o-mini'
-  const [rounds, setRounds] = useState(30);
+  const [rounds, setRounds] = useState(50);
   const [kWindow, setKWindow] = useState(''); // 可空
 
   // 觀察結果

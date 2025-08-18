@@ -15,7 +15,7 @@ from ...schemas.observer import (
     ObserverPredictReq, ObserverPredictResp,
     ObserverRunReq, ObserverRunResp, RoundRecord, StrategyProbs
 )
-from ...services.llm import estimate_payoff
+from ...services.llm import estimate_payoff, identify_from_history
 from ...domain.strategies import (
     get_all_strategies, get_strategy_names,
     calculate_matchup, beats,
@@ -73,8 +73,27 @@ def observer_run(req: ObserverRunReq):
     if req.true_strategy1 not in all_strategies or req.true_strategy2 not in all_strategies:
         raise HTTPException(status_code=400, detail="真實策略不存在")
 
-    # 準備策略名稱與完整對戰矩陣（供 union_loss 計算與辨識比對）
+    # 準備策略名稱、完整策略定義，以及完整對戰矩陣（供 union_loss 計算與辨識比對）
     strategy_names = get_strategy_names()
+    # 完整策略定義表（靜態含分佈、動態含規則文字）
+    dynamic_rules = {
+        'X': '出剋制對手上一輪的拳（若對手上一輪偏剪刀，則我偏石頭；依此類推）',
+        'Y': '出會被對手上一輪剋制的拳（若對手上一輪偏剪刀，則我偏布；依此類推）',
+        'Z': '出與對手上一輪相同的拳（跟隨對手上一輪分佈）',
+    }
+    strategy_catalog = {}
+    for k, v in BASE_STRATEGIES.items():
+        strategy_catalog[k] = {
+            'type': 'static',
+            'name': v['name'],
+            'dist': {'rock': v['rock'], 'paper': v['paper'], 'scissors': v['scissors']},
+        }
+    for k, v in DYNAMIC_STRATEGIES.items():
+        strategy_catalog[k] = {
+            'type': 'dynamic',
+            'name': v['name'],
+            'rule': dynamic_rules.get(k, ''),
+        }
     codes = list(all_strategies.keys())
     matrix = {s1: {s2: calculate_matchup(s1, s2) for s2 in codes} for s1 in codes}
 
@@ -165,7 +184,32 @@ def observer_run(req: ObserverRunReq):
 
         # 3) 取 k-window 歷史做辨識（含本輪）
         hw = history[-req.k_window:] if req.k_window else history
-        guess_s1, guess_s2, best_pair = fallback_identify(hw)
+        # 嘗試 LLM 辨識（包含策略代號表與逐輪出拳/結果）
+        try:
+            # 構建 JSON 歷史，使 LLM 明確知悉每輪數據
+            base_round = len(history) - len(hw) + 1
+            hist_json = [
+                {"round": base_round + i, "move1": m1, "move2": m2, "result": res}
+                for i, (m1, m2, res) in enumerate(hw)
+            ]
+            ident = identify_from_history(strategy_catalog, hist_json, req.model)
+        except Exception:
+            ident = None
+
+        if ident and ident.get('s1_code') in codes and ident.get('s2_code') in codes:
+            # 以 LLM 結果建立一熱分佈（便於前端顯示百分比）
+            s1_probs = {c: 0.0 for c in codes}; s1_probs[ident['s1_code']] = 1.0
+            s2_probs = {c: 0.0 for c in codes}; s2_probs[ident['s2_code']] = 1.0
+            guess_s1 = StrategyProbs(probs=s1_probs, top1=ident['s1_code'])
+            guess_s2 = StrategyProbs(probs=s2_probs, top1=ident['s2_code'])
+            best_pair = (ident['s1_code'], ident['s2_code'])
+            extra_conf = float(ident.get('confidence') or 0.6)
+            extra_reason = ident.get('reasoning') or None
+        else:
+            # LLM 無法辨識或失敗，回退本地辨識
+            guess_s1, guess_s2, best_pair = fallback_identify(hw)
+            extra_conf = None
+            extra_reason = None
 
         # 4) 以真實 vs 猜測 top-1 組合計 union_loss
         true_dist = matrix[k1_true][k2_true]
@@ -183,6 +227,8 @@ def observer_run(req: ObserverRunReq):
             guess_s2=guess_s2,
             union_loss=union_loss,
             delta=delta,
+            confidence=extra_conf,
+            reasoning=extra_reason,
         ))
 
     # 趨勢摘要

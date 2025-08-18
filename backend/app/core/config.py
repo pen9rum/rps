@@ -38,5 +38,7 @@ class Settings:
 
     # 是否在日誌輸出送往 LLM 的 prompt（預設關閉）
     LLM_LOG_PROMPT: bool = (os.getenv("LLM_LOG_PROMPT", "0").lower() in ("1", "true", "yes", "y"))
+    # 送往 LLM 的 prompt 檔案輸出目錄（相對路徑以 backend/ 為基準），預設 backend/logs/llm
+    LLM_LOG_DIR: str = os.getenv("LLM_LOG_DIR", "logs/llm")
 
 settings = Settings()
