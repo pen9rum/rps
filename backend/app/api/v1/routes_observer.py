@@ -1,26 +1,28 @@
 """
-觀察者預測 API 路由模組
+觀察者（Observer）API
 
-功能：
-- 提供 LLM 策略預測 API
-- 支援策略代碼和描述文字輸入
-- 整合 OpenAI API 進行預測
+本模組現在同時承擔：
+- 單次配對分佈預測（/observer/predict）
+- 逐輪「觀察 + 辨識」主流程（/observer/run）
 
-API 端點：
-- POST /observer/predict - 觀察者預測
+更新重點：
+- /observer/run 已改為：前 warmup 回合只蒐集歷史；第 11 輪起，每輪輸出對「雙邊策略的辨識結果」與 union_loss
+- union_loss 以 backend/app/domain/metrics.py 中 CE/Brier/EV 三者平均為準
 """
 
 from fastapi import APIRouter, HTTPException
 from ...schemas.observer import (
     ObserverPredictReq, ObserverPredictResp,
-    ObserverRunReq, ObserverRunResp, RoundPrediction
+    ObserverRunReq, ObserverRunResp, RoundRecord, StrategyProbs
 )
 from ...services.llm import estimate_payoff
 from ...domain.strategies import (
-    get_all_strategies, beats,
+    get_all_strategies, get_strategy_names,
+    calculate_matchup, beats,
     BASE_STRATEGIES, DYNAMIC_STRATEGIES,
     resolve_dist, iterate_dists
 )
+from ...domain.metrics import compute_union_loss
 
 router = APIRouter(prefix="/observer", tags=["observer"])
 
@@ -59,90 +61,149 @@ def observer_predict(req: ObserverPredictReq):
 
 @router.post("/run", response_model=ObserverRunResp)
 def observer_run(req: ObserverRunReq):
-    """連續多輪觀察：
-    - 真實策略以代碼表示（如 'A' / 'B'）
-    - 每輪先用模型對當前對戰做勝負平預測，再用簡易模擬器跑一輪實際結果
-    - 回傳逐輪紀錄與彙總
     """
-    strategies = get_all_strategies()
-    if req.true_strategy1 not in strategies or req.true_strategy2 not in strategies:
+    逐輪觀察 + 辨識：
+    - 前 warmup 回合：只依真實策略進行對戰，蒐集歷史
+    - 第 warmup+1 輪起：每輪根據歷史辨識雙邊最可能策略，並計算 union_loss（以真實(A/B) 對「猜測 top-1 組合」的分佈）
+
+    註：目前辨識預設使用 fallback（根據歷史勝負平與全空間對戰分佈比對），若環境提供 LLM 金鑰，
+        可在 services/llm.py 擴充 identify 函式改為 LLM 推理。
+    """
+    all_strategies = get_all_strategies()
+    if req.true_strategy1 not in all_strategies or req.true_strategy2 not in all_strategies:
         raise HTTPException(status_code=400, detail="真實策略不存在")
 
-    # 名稱描述供 LLM 預測
-    desc1 = strategies[req.true_strategy1]['name']
-    desc2 = strategies[req.true_strategy2]['name']
+    # 準備策略名稱與完整對戰矩陣（供 union_loss 計算與辨識比對）
+    strategy_names = get_strategy_names()
+    codes = list(all_strategies.keys())
+    matrix = {s1: {s2: calculate_matchup(s1, s2) for s2 in codes} for s1 in codes}
 
-    history = []
-    per_round = []
-    wins = 0
-    losses = 0
-    draws = 0
-
-    for r in range(1, int(req.rounds) + 1):
-        # LLM/備用模型預測
-        pred = estimate_payoff(desc1, desc2, model=req.model)
-
-        # 實際對戰一回合（依策略組合計算當前拳分佈後抽樣）
-        import random
-        def sample_move(dist):
-            return random.choices([0,1,2], weights=[dist['rock'], dist['paper'], dist['scissors']])[0]
-
-        # 依真實策略取得當前回合使用的分佈
-        k1 = req.true_strategy1
-        k2 = req.true_strategy2
+    # 便捷：根據真實策略生成當回合出拳分佈
+    def current_dists(k1: str, k2: str):
         is_base1 = k1 in BASE_STRATEGIES
         is_base2 = k2 in BASE_STRATEGIES
-
         if is_base1 and is_base2:
-            dist1 = BASE_STRATEGIES[k1]
-            dist2 = BASE_STRATEGIES[k2]
-        elif is_base1 and not is_base2:
-            dist1 = BASE_STRATEGIES[k1]
-            dist2 = resolve_dist(k2, dist1)
-        elif not is_base1 and is_base2:
-            dist2 = BASE_STRATEGIES[k2]
-            dist1 = resolve_dist(k1, dist2)
-        else:
-            # 雙動態：使用穩態分佈
-            it = iterate_dists(k1, k2, 50)
-            dist1, dist2 = it['s1'], it['s2']
+            return BASE_STRATEGIES[k1], BASE_STRATEGIES[k2]
+        if is_base1 and not is_base2:
+            return BASE_STRATEGIES[k1], resolve_dist(k2, BASE_STRATEGIES[k1])
+        if not is_base1 and is_base2:
+            return resolve_dist(k1, BASE_STRATEGIES[k2]), BASE_STRATEGIES[k2]
+        it = iterate_dists(k1, k2, 50)
+        return it['s1'], it['s2']
 
+    # 便捷：抽樣出拳
+    import random
+    def sample_move(dist):
+        return random.choices([0,1,2], weights=[dist['rock'], dist['paper'], dist['scissors']])[0]
+
+    # 便捷：由一段歷史估計「經驗勝負平分佈」（百分比，與矩陣格式一致）
+    def empirical_dist(hist):
+        if not hist:
+            return {'wins': 33.3, 'losses': 33.3, 'draws': 33.4}
+        wins = sum(1 for _,_,r in hist if r == 1)
+        losses = sum(1 for _,_,r in hist if r == -1)
+        draws = sum(1 for _,_,r in hist if r == 0)
+        total = max(1, wins + losses + draws)
+        return {
+            'wins': wins * 100.0 / total,
+            'losses': losses * 100.0 / total,
+            'draws': draws * 100.0 / total,
+        }
+
+    # 便捷：根據歷史用「loss 加權」產生雙邊機率並選擇最可能的組合
+    def fallback_identify(hist_window):
+        ed = empirical_dist(hist_window)
+        # 對所有 (s1,s2) 計算 union_loss，分數越小越好
+        pair_losses = {}
+        for s1 in codes:
+            for s2 in codes:
+                loss = compute_union_loss(ed, matrix[s1][s2])
+                pair_losses[(s1, s2)] = loss
+        # 轉為權重（softmax on -loss）
+        tau = 0.5
+        import math
+        weights = {p: math.exp(-pair_losses[p]/tau) for p in pair_losses}
+        z = sum(weights.values()) or 1.0
+        weights = {p: w/z for p, w in weights.items()}
+        # 邊際化為左右機率
+        s1_probs = {c: 0.0 for c in codes}
+        s2_probs = {c: 0.0 for c in codes}
+        for (s1, s2), w in weights.items():
+            s1_probs[s1] += w
+            s2_probs[s2] += w
+        # 取最可能的成對（直接用最小 loss 的組合作為 top-1）
+        best_pair = min(pair_losses, key=pair_losses.get)
+        top_s1, top_s2 = best_pair
+        # 正規化（保險）
+        sum1 = sum(s1_probs.values()) or 1.0
+        sum2 = sum(s2_probs.values()) or 1.0
+        s1_probs = {k: v/sum1 for k, v in s1_probs.items()}
+        s2_probs = {k: v/sum2 for k, v in s2_probs.items()}
+        return (
+            StrategyProbs(probs=s1_probs, top1=top_s1),
+            StrategyProbs(probs=s2_probs, top1=top_s2),
+            best_pair
+        )
+
+    k1_true, k2_true = req.true_strategy1, req.true_strategy2
+    history = []  # [(move1, move2, result)]
+    per_round: list[RoundRecord] = []
+    last_union_loss: float = 0.0
+
+    for r in range(1, int(req.rounds) + 1):
+        # 1) 先用真實策略打一輪，蒐集歷史
+        dist1, dist2 = current_dists(k1_true, k2_true)
         m1 = sample_move(dist1)
         m2 = sample_move(dist2)
         res = beats(m1, m2)
-        history.append((m1, m2))
+        history.append((m1, m2, res))
 
-        if res == 1: wins += 1
-        elif res == -1: losses += 1
-        else: draws += 1
+        # 2) warmup 期間不辨識
+        if r <= (req.warmup_rounds or 0):
+            per_round.append(RoundRecord(round=r, move1=m1, move2=m2, result=res))
+            continue
 
-        per_round.append(RoundPrediction(
+        # 3) 取 k-window 歷史做辨識（含本輪）
+        hw = history[-req.k_window:] if req.k_window else history
+        guess_s1, guess_s2, best_pair = fallback_identify(hw)
+
+        # 4) 以真實 vs 猜測 top-1 組合計 union_loss
+        true_dist = matrix[k1_true][k2_true]
+        pred_dist = matrix[best_pair[0]][best_pair[1]]
+        union_loss = compute_union_loss(true_dist, pred_dist)
+        delta = None if r == (req.warmup_rounds or 0) + 1 else (union_loss - last_union_loss)
+        last_union_loss = union_loss
+
+        per_round.append(RoundRecord(
             round=r,
-            win=pred.get('win', 0.0),
-            loss=pred.get('loss', 0.0),
-            draw=pred.get('draw', 0.0),
-            confidence=pred.get('confidence', 0.0),
             move1=m1,
             move2=m2,
             result=res,
+            guess_s1=guess_s1,
+            guess_s2=guess_s2,
+            union_loss=union_loss,
+            delta=delta,
         ))
 
-    total = float(req.rounds) if req.rounds else 1.0
-    summary = {
-        'win': wins,
-        'loss': losses,
-        'draw': draws,
-        'win_rate': wins / total,
-        'loss_rate': losses / total,
-        'draw_rate': draws / total,
-    }
+    # 趨勢摘要
+    losses = [r.union_loss for r in per_round if r.union_loss is not None]
+    trend = {}
+    if losses:
+        trend['last'] = losses[-1]
+        trend['min'] = min(losses)
+        trend['avg_5'] = sum(losses[-5:]) / min(5, len(losses))
+
+    final_guess = {'s1': per_round[-1].guess_s1.top1 if per_round[-1].guess_s1 else '',
+                   's2': per_round[-1].guess_s2.top1 if per_round[-1].guess_s2 else ''}
 
     return ObserverRunResp(
         model=req.model,
-        true_strategy1=req.true_strategy1,
-        true_strategy2=req.true_strategy2,
+        true_strategy1=k1_true,
+        true_strategy2=k2_true,
         rounds=req.rounds,
+        warmup_rounds=req.warmup_rounds,
         k_window=req.k_window,
         per_round=per_round,
-        summary=summary,
+        trend=trend,
+        final_guess=final_guess,
     )

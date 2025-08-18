@@ -8,11 +8,11 @@
 """
 
 from pydantic import BaseModel
-from typing import Optional, List, Dict
+from typing import Dict, List, Optional
 
+# --- 相容保留：單次配對分佈預測用的請求/回應模型（/observer/predict 仍會用到） ---
 class ObserverPredictReq(BaseModel):
-    """觀察者預測請求模型"""
-    # 支援兩種輸入方式
+    """單次配對分佈預測請求模型"""
     description_s1: Optional[str] = None  # 策略1描述
     description_s2: Optional[str] = None  # 策略2描述
     strategy1: Optional[str] = None       # 策略1代碼 (如 'A', 'B', 'X')
@@ -21,41 +21,45 @@ class ObserverPredictReq(BaseModel):
     model: Optional[str] = None           # 模型名稱（例如 'deepseek', '4o-mini'）
 
 class ObserverPredictResp(BaseModel):
-    """觀察者預測回應模型"""
+    """單次配對分佈預測回應模型"""
     win: float
     loss: float
     draw: float
     confidence: float
     reasoning: Optional[str] = None  # 推理過程
 
+class StrategyProbs(BaseModel):
+    probs: Dict[str, float]   # A..Z 的機率
+    top1: str                 # 機率最高的策略代碼
 
 class ObserverRunReq(BaseModel):
-    """觀察者連續觀察請求"""
     true_strategy1: str
     true_strategy2: str
-    rounds: int = 50
+    rounds: int = 50          # 最高輪次 R
+    warmup_rounds: int = 10   # 前 10 輪不辨識，只蒐集歷史
     k_window: Optional[int] = None
-    model: Optional[str] = None  # 'deepseek' | '4o-mini'
+    model: Optional[str] = "deepseek"  # 'deepseek' | '4o-mini'
 
-
-class RoundPrediction(BaseModel):
-    """單輪預測與結果紀錄"""
+class RoundRecord(BaseModel):
     round: int
-    win: float
-    loss: float
-    draw: float
-    confidence: float
-    move1: int
+    move1: int                # 0/1/2
     move2: int
-    result: int  # 1=win, 0=draw, -1=loss（對真實策略1而言）
-
+    result: int               # 1 / 0 / -1 (對 s1 而言)
+    # NOTE: 第 11 輪後才會填入模型辨識結果；前 10 輪 warmup 期間為 None
+    guess_s1: Optional[StrategyProbs] = None
+    guess_s2: Optional[StrategyProbs] = None
+    union_loss: Optional[float] = None
+    delta: Optional[float] = None      # 相較上一輪 union_loss 的變化（負值=變好）
+    confidence: Optional[float] = None
+    reasoning: Optional[str] = None    # 可截斷簡短摘要
 
 class ObserverRunResp(BaseModel):
-    """觀察者連續觀察回應"""
-    model: Optional[str] = None
+    model: Optional[str]
     true_strategy1: str
     true_strategy2: str
     rounds: int
-    k_window: Optional[int] = None
-    per_round: List[RoundPrediction]
-    summary: Dict[str, float]  # {win, loss, draw, win_rate, loss_rate, draw_rate}
+    warmup_rounds: int
+    k_window: Optional[int]
+    per_round: List[RoundRecord]
+    trend: Dict[str, float]            # 例如 {"last": x, "min": y, "avg_5": z}
+    final_guess: Dict[str, str]        # {"s1": "H", "s2": "Z"}

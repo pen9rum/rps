@@ -36,4 +36,7 @@ class Settings:
     OPENROUTER_SITE_URL: Optional[str] = os.getenv("OPENROUTER_SITE_URL")
     OPENROUTER_SITE_NAME: Optional[str] = os.getenv("OPENROUTER_SITE_NAME")
 
+    # 是否在日誌輸出送往 LLM 的 prompt（預設關閉）
+    LLM_LOG_PROMPT: bool = (os.getenv("LLM_LOG_PROMPT", "0").lower() in ("1", "true", "yes", "y"))
+
 settings = Settings()

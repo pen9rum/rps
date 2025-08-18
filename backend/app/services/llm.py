@@ -216,6 +216,12 @@ def call_openai_for_prediction(description_s1: str, description_s2: str, prompt_
         raise ValueError("OpenAI API key not configured")
 
     prompt = _build_prompt(description_s1, description_s2, prompt_style)
+    # 依環境變數決定是否輸出 prompt 到日誌
+    if settings.LLM_LOG_PROMPT:
+        try:
+            print("[LLM PROMPT - OpenAI]".ljust(24, ' '), "\n" + prompt)
+        except Exception:
+            pass
     client = _ensure_openai_client(api_key=settings.OPENAI_API_KEY)
     resp = client.chat.completions.create(
         model="gpt-4o-mini",
@@ -244,6 +250,11 @@ def call_openrouter_deepseek(description_s1: str, description_s2: str, prompt_st
     site_name = os.getenv("OPENROUTER_SITE_NAME", "RPS Observer")
 
     prompt = _build_prompt(description_s1, description_s2, prompt_style)
+    if settings.LLM_LOG_PROMPT:
+        try:
+            print("[LLM PROMPT - OpenRouter]".ljust(24, ' '), "\n" + prompt)
+        except Exception:
+            pass
 
     # ⚠️ 不使用全域快取；每次為 OpenRouter 建立新 client，避免 base_url 被舊 client 影響
     from openai import OpenAI

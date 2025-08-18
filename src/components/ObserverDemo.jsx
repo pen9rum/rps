@@ -164,18 +164,27 @@ const ObserverDemo = () => {
         </button>
       </div>
 
-      {/* 逐輪結果 */}
+      {/* 逐輪結果（更新：顯示辨識與 union loss） */}
       {runResult && (
         <div className="mb-6 p-4 bg-blue-50 border border-blue-200 rounded">
           <h3 className="text-lg font-semibold mb-3">🧠 逐輪預測與實際結果</h3>
+          {runResult.trend && (
+            <div className="mb-3 text-sm text-gray-700">
+              <span className="mr-4">當前 loss: {runResult.trend.last?.toFixed?.(4)}</span>
+              <span className="mr-4">近5均值: {runResult.trend.avg_5?.toFixed?.(4)}</span>
+              <span>歷史最小: {runResult.trend.min?.toFixed?.(4)}</span>
+            </div>
+          )}
           <div className="overflow-x-auto">
             <table className="min-w-full text-sm">
               <thead>
                 <tr className="text-left">
                   <th className="p-2">回合</th>
-                  <th className="p-2">預測 勝/敗/平</th>
-                  <th className="p-2">信心</th>
-                  <th className="p-2">實際結果</th>
+                  <th className="p-2">S1 猜測</th>
+                  <th className="p-2">S2 猜測</th>
+                  <th className="p-2">union loss</th>
+                  <th className="p-2">Δ</th>
+                  <th className="p-2">勝負</th>
                   <th className="p-2">出拳(1/2)</th>
                 </tr>
               </thead>
@@ -183,11 +192,11 @@ const ObserverDemo = () => {
                 {runResult.per_round.map((r) => (
                   <tr key={r.round} className="odd:bg-white even:bg-blue-100/40">
                     <td className="p-2">{r.round}</td>
-                    <td className="p-2">{(r.win*100).toFixed(1)}% / {(r.loss*100).toFixed(1)}% / {(r.draw*100).toFixed(1)}%</td>
-                    <td className="p-2">{(r.confidence*100).toFixed(0)}%</td>
-                    <td className="p-2">
-                      {r.result === 1 ? '勝' : r.result === -1 ? '敗' : '平'}
-                    </td>
+                    <td className="p-2">{r.guess_s1 ? `${r.guess_s1.top1} (${((r.guess_s1.probs?.[r.guess_s1.top1]||0)*100).toFixed(0)}%)` : '—'}</td>
+                    <td className="p-2">{r.guess_s2 ? `${r.guess_s2.top1} (${((r.guess_s2.probs?.[r.guess_s2.top1]||0)*100).toFixed(0)}%)` : '—'}</td>
+                    <td className="p-2">{r.union_loss != null ? r.union_loss.toFixed(4) : '—'}</td>
+                    <td className="p-2">{r.delta != null ? r.delta.toFixed(4) : '—'}</td>
+                    <td className="p-2">{r.result === 1 ? '勝' : r.result === -1 ? '敗' : '平'}</td>
                     <td className="p-2">{r.move1} / {r.move2}</td>
                   </tr>
                 ))}
@@ -197,17 +206,14 @@ const ObserverDemo = () => {
         </div>
       )}
 
-      {/* 彙總統計 */}
+      {/* 彙總統計（更新：最終猜測與趨勢） */}
       {runResult && (
         <div className="mb-6 p-4 bg-green-50 border border-green-200 rounded">
           <h3 className="text-lg font-semibold mb-2">📊 彙總統計</h3>
-          <div className="grid grid-cols-2 md:grid-cols-6 gap-4 text-sm">
-            <div>勝場: {runResult.summary.win}</div>
-            <div>敗場: {runResult.summary.loss}</div>
-            <div>平局: {runResult.summary.draw}</div>
-            <div>勝率: {(runResult.summary.win_rate*100).toFixed(1)}%</div>
-            <div>敗率: {(runResult.summary.loss_rate*100).toFixed(1)}%</div>
-            <div>平率: {(runResult.summary.draw_rate*100).toFixed(1)}%</div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
+            <div>最終猜測：S1 → {runResult.final_guess?.s1 || '—'}，S2 → {runResult.final_guess?.s2 || '—'}</div>
+            <div>當前 loss：{runResult.trend?.last != null ? runResult.trend.last.toFixed(4) : '—'}</div>
+            <div>歷史最小：{runResult.trend?.min != null ? runResult.trend.min.toFixed(4) : '—'}</div>
           </div>
         </div>
       )}
