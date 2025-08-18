@@ -50,6 +50,20 @@ export async function observerRun(body) {
   return res.json();
 }
 
+// --- 新增：以 SSE 串流逐輪獲取觀察結果 ---
+export function openObserverStream({ true_strategy1, true_strategy2, rounds = 50, warmup_rounds = 10, k_window, model = 'deepseek' }) {
+  const params = new URLSearchParams({
+    true_strategy1,
+    true_strategy2,
+    rounds: String(rounds),
+    warmup_rounds: String(warmup_rounds),
+    model: String(model || ''),
+  });
+  if (k_window != null && k_window !== '') params.set('k_window', String(k_window));
+  const url = `/api/v1/observer/stream?${params.toString()}`;
+  return new EventSource(url);
+}
+
 export async function playerAct(body) {
   const res = await fetch('/api/v1/player/act', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },

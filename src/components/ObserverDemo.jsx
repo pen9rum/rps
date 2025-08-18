@@ -11,7 +11,8 @@
 import React, { useState, useEffect } from 'react';
 import { 
   getAllStrategies,
-  observerRun
+  observerRun,
+  openObserverStream
 } from '../lib/api.js';
 
 // 簡易折線圖元件（無第三方依賴，使用 SVG）
@@ -76,8 +77,14 @@ const ObserverDemo = () => {
   const [rounds, setRounds] = useState(50);
   const [kWindow, setKWindow] = useState(''); // 可空
 
-  // 觀察結果
+  // 觀察結果（批次）
   const [runResult, setRunResult] = useState(null);
+  // 串流狀態（逐輪）
+  const [liveRows, setLiveRows] = useState([]);
+  const [isStreaming, setIsStreaming] = useState(false);
+  const esRef = React.useRef(null);
+  const liveRowsRef = React.useRef(liveRows);
+  useEffect(() => { liveRowsRef.current = liveRows; }, [liveRows]);
 
   // 載入策略列表
   useEffect(() => {
@@ -97,22 +104,77 @@ const ObserverDemo = () => {
     setLoading(true);
     setError(null);
     setRunResult(null);
+    setLiveRows([]);
+    setIsStreaming(true);
     try {
-      const payload = {
+      // 嘗試串流模式
+      const es = openObserverStream({
         true_strategy1: trueStrategy1,
         true_strategy2: trueStrategy2,
         rounds: Number(rounds) || 1,
+        k_window: kWindow !== '' ? Number(kWindow) : undefined,
         model,
+      });
+      esRef.current = es;
+
+      es.addEventListener('init', () => {
+        // 可視需要使用策略名稱
+      });
+
+      es.addEventListener('round', (ev) => {
+        const data = JSON.parse(ev.data);
+        setLiveRows(prev => [...prev, data]);
+      });
+
+      es.addEventListener('final', (ev) => {
+        const data = JSON.parse(ev.data);
+        const per_round = liveRowsRef.current.slice();
+        const finalGuess = {
+          s1: per_round.length && per_round[per_round.length - 1].guess_s1 ? per_round[per_round.length - 1].guess_s1.top1 : '',
+          s2: per_round.length && per_round[per_round.length - 1].guess_s2 ? per_round[per_round.length - 1].guess_s2.top1 : '',
+        };
+        setRunResult({
+          model: data.model,
+          true_strategy1: data.true_strategy1,
+          true_strategy2: data.true_strategy2,
+          rounds: data.rounds,
+          warmup_rounds: data.warmup_rounds,
+          k_window: data.k_window,
+          per_round,
+          trend: data.trend || {},
+          final_guess: finalGuess,
+        });
+        setIsStreaming(false);
+        es.close();
+      });
+
+      es.onerror = async () => {
+        try { es.close(); } catch {}
+        // 回退批次模式
+        const payload = {
+          true_strategy1: trueStrategy1,
+          true_strategy2: trueStrategy2,
+          rounds: Number(rounds) || 1,
+          model,
+        };
+        if (kWindow !== '') payload.k_window = Number(kWindow);
+        const result = await observerRun(payload);
+        setRunResult(result);
+        setIsStreaming(false);
       };
-      if (kWindow !== '') payload.k_window = Number(kWindow);
-      const result = await observerRun(payload);
-      setRunResult(result);
     } catch (err) {
       setError('開始觀察失敗: ' + err.message);
+      setIsStreaming(false);
     } finally {
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    return () => {
+      try { esRef.current?.close?.(); } catch {}
+    };
+  }, []);
 
   const strategyOptions = Object.entries(strategies).map(([code, name]) => (
     <option key={code} value={code}>{code}: {name}</option>
@@ -232,11 +294,11 @@ const ObserverDemo = () => {
         </div>
       )}
 
-      {/* 逐輪結果（更新：顯示辨識與 union loss） */}
-      {runResult && (
+      {/* 逐輪結果（更新：顯示辨識與 union loss；串流時即時顯示） */}
+      {(isStreaming || runResult) && (
         <div className="mb-6 p-4 bg-blue-50 border border-blue-200 rounded">
           <h3 className="text-lg font-semibold mb-3">🧠 逐輪預測與實際結果</h3>
-          {runResult.trend && (
+          {runResult && runResult.trend && (
             <div className="mb-3 text-sm text-gray-700">
               <span className="mr-4">當前 loss: {runResult.trend.last?.toFixed?.(4)}</span>
               <span className="mr-4">近5均值: {runResult.trend.avg_5?.toFixed?.(4)}</span>
@@ -257,7 +319,7 @@ const ObserverDemo = () => {
                 </tr>
               </thead>
               <tbody>
-                {runResult.per_round.map((r) => (
+                {(isStreaming ? liveRows : (runResult?.per_round || [])).map((r) => (
                   <tr key={r.round} className="odd:bg-white even:bg-blue-100/40">
                     <td className="p-2">{r.round}</td>
                     <td className="p-2">{r.guess_s1 ? `${r.guess_s1.top1} (${((r.guess_s1.probs?.[r.guess_s1.top1]||0)*100).toFixed(0)}%)` : '—'}</td>
@@ -273,8 +335,6 @@ const ObserverDemo = () => {
           </div>
         </div>
       )}
-
-      
 
       {/* 矩陣結果預覽 */}
       {false && <div />}
