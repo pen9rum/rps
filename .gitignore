@@ -4,4 +4,13 @@ backend/.env
 backend/logs/
 backend/.DS_Store
 .DS_Store
+*.pyc
 __pycache__/
+app/__pycache__/
+app/api/__pycache__/
+app/core/__pycache__/
+app/domain/__pycache__/
+app/services/__pycache__/
+app/utils/__pycache__/
+app/api/v1/__pycache__/
+app/api/v1/routes_observer/__pycache__/

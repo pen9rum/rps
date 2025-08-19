@@ -12,7 +12,8 @@ import React, { useState, useEffect } from 'react';
 // import './styles/custom.scss';
 import { 
 	getAllStrategies,
-	openObserverStream
+	openObserverStream,
+	observerRun
 } from '../lib/api.js';
 
 // 簡易折線圖元件（無第三方依賴，使用 SVG）
@@ -73,11 +74,11 @@ const ObserverDemo = () => {
   const [trueStrategy2, setTrueStrategy2] = useState('B');
   
   // 模型與回合設定
-  const [model, setModel] = useState('deepseek'); // 'deepseek' | '4o-mini'
-  const [rounds, setRounds] = useState(50);
+  const [model, setModel] = useState('gpt-4o-mini'); // 'deepseek' | '4o-mini'
+  const [rounds, setRounds] = useState(15);
   const [warmupRounds, setWarmupRounds] = useState('10');
-  const [historyLimit, setHistoryLimit] = useState('');
-  const [reasoningInterval, setReasoningInterval] = useState('50');
+  const [historyLimit, setHistoryLimit] = useState('50');
+  const [reasoningInterval, setReasoningInterval] = useState('20');
 
   // 觀察結果（批次）
   const [runResult, setRunResult] = useState(null);
@@ -107,10 +108,10 @@ const ObserverDemo = () => {
     setError(null);
     setRunResult(null);
     setLiveRows([]);
+    liveRowsRef.current = [];
     setIsStreaming(true);
     try {
-      // 嘗試串流模式
-      const es = openObserverStream({
+      const body = {
         true_strategy1: trueStrategy1,
         true_strategy2: trueStrategy2,
         rounds: Number(rounds) || 1,
@@ -118,7 +119,10 @@ const ObserverDemo = () => {
         history_limit: historyLimit !== '' ? Number(historyLimit) : undefined,
         reasoning_interval: reasoningInterval !== '' ? Number(reasoningInterval) : undefined,
         model,
-      });
+      };
+
+      // 嘗試串流模式
+      const es = openObserverStream(body);
       esRef.current = es;
 
       es.addEventListener('init', () => {
@@ -128,9 +132,8 @@ const ObserverDemo = () => {
       es.addEventListener('round', (ev) => {
         try {
           const data = JSON.parse(ev.data);
-          // 調試：可在開發者工具查看實際回傳內容
-          // console.debug('SSE round:', data);
-          setLiveRows(prev => [...prev, data]);
+          liveRowsRef.current = [...liveRowsRef.current, data];
+          setLiveRows(liveRowsRef.current);
         } catch (e) {
           console.warn('Failed to parse SSE round data:', e, ev.data);
         }
@@ -142,8 +145,8 @@ const ObserverDemo = () => {
         if (!data) { setIsStreaming(false); try { es.close(); } catch {} return; }
         const per_round = liveRowsRef.current.slice();
         const finalGuess = {
-          s1: per_round.length && per_round[per_round.length - 1].guess_s1 ? per_round[per_round.length - 1].guess_s1.top1 : '',
-          s2: per_round.length && per_round[per_round.length - 1].guess_s2 ? per_round[per_round.length - 1].guess_s2.top1 : '',
+          s1: per_round.length && per_round[per_round.length - 1].guess_s1 ? per_round[per_round.length - 1].guess_s1 : '',
+          s2: per_round.length && per_round[per_round.length - 1].guess_s2 ? per_round[per_round.length - 1].guess_s2 : '',
         };
         setRunResult({
           model: data.model,
@@ -156,6 +159,8 @@ const ObserverDemo = () => {
           per_round,
           trend: data.trend || {},
           final_guess: finalGuess,
+          early_stop: !!data.early_stop,
+          early_stop_round: data.early_stop_round || null,
         });
         setIsStreaming(false);
         es.close();
@@ -163,20 +168,16 @@ const ObserverDemo = () => {
 
       es.addEventListener('error', (ev) => {
         try { es.close(); } catch {}
-        setIsStreaming(false);
-        setError('Identify failed or unavailable (check API keys).');
       });
       es.onerror = () => {
         try { es.close(); } catch {}
-        setIsStreaming(false);
-        setError('Identify failed or unavailable (check API keys).');
       };
     } catch (err) {
-      setError('Failed to start: ' + err.message);
+      // 若建立 SSE 失敗 顯示錯誤
+      setError('Failed to start: ' + (err.message || err.message));
       setIsStreaming(false);
-    } finally {
-      setLoading(false);
     }
+    setLoading(false);
   };
 
   useEffect(() => {
@@ -211,8 +212,8 @@ const ObserverDemo = () => {
               value={model}
               onChange={(e) => setModel(e.target.value)}
             >
+              <option value="gpt-4o-mini">GPT-4o mini (OpenAI)</option>
               <option value="deepseek">DeepSeek (OpenRouter)</option>
-              <option value="4o-mini">GPT-4o mini (OpenAI)</option>
             </select>
           </div>
           <div>
@@ -255,7 +256,7 @@ const ObserverDemo = () => {
               className="w-full p-2 border rounded"
               value={reasoningInterval}
               onChange={(e) => setReasoningInterval(e.target.value)}
-              placeholder="e.g. 50"
+              placeholder="e.g. 5"
             />
           </div>
         </div>
@@ -310,6 +311,11 @@ const ObserverDemo = () => {
             <div>Current loss: {runResult.trend?.last != null ? runResult.trend.last.toFixed(4) : '—'}</div>
             <div>Historical min: {runResult.trend?.min != null ? runResult.trend.min.toFixed(4) : '—'}</div>
           </div>
+          {runResult.early_stop && (
+            <div className="mt-2 text-sm text-amber-700">
+              Early Stopped at round {runResult.early_stop_round}
+            </div>
+          )}
           {/* 新增：loss 折線圖 */}
           <div className="mt-4">
             {(() => {
@@ -354,8 +360,8 @@ const ObserverDemo = () => {
                   return (
                     <tr key={r.round} className="odd:bg-white even:bg-blue-100/40">
                       <td className="p-2">{r.round}</td>
-                      <td className="p-2">{r.guess_s1 ? `${r.guess_s1.top1} (${((r.guess_s1.probs?.[r.guess_s1.top1]||0)*100).toFixed(0)}%)` : '—'}</td>
-                      <td className="p-2">{r.guess_s2 ? `${r.guess_s2.top1} (${((r.guess_s2.probs?.[r.guess_s2.top1]||0)*100).toFixed(0)}%)` : '—'}</td>
+                      <td className="p-2">{r.guess_s1 ? r.guess_s1 : '—'}</td>
+                      <td className="p-2">{r.guess_s2 ? r.guess_s2 : '—'}</td>
                       <td className="p-2">{r.union_loss != null ? r.union_loss.toFixed(4) : '—'}</td>
                       <td className="p-2">{r.delta != null ? r.delta.toFixed(4) : '—'}</td>
                       <td className="p-2">{r.result === 1 ? 'Win' : r.result === -1 ? 'Lose' : 'Draw'}</td>

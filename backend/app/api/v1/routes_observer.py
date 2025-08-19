@@ -21,7 +21,10 @@ from ...domain.strategies import (
     BASE_STRATEGIES, DYNAMIC_STRATEGIES,
     resolve_dist, iterate_dists
 )
+from ...core.config import settings
 from ...domain.metrics import compute_union_loss
+from dotenv import load_dotenv
+load_dotenv()
 
 router = APIRouter(prefix="/observer", tags=["observer"])
 
@@ -55,12 +58,13 @@ def observer_run(req: ObserverRunReq):
             'name': v['name'],
             'dist': {'rock': v['rock'], 'paper': v['paper'], 'scissors': v['scissors']},
         }
-    for k, v in DYNAMIC_STRATEGIES.items():
-        strategy_catalog[k] = {
-            'type': 'dynamic',
-            'name': v['name'],
-            'rule': dynamic_rules.get(k, ''),
-        }
+    if settings.USE_DYNAMIC_STRATEGIES:
+        for k, v in DYNAMIC_STRATEGIES.items():
+            strategy_catalog[k] = {
+                'type': 'dynamic',
+                'name': v['name'],
+                'rule': dynamic_rules.get(k, ''),
+            }
     codes = list(all_strategies.keys())
     matrix = {s1: {s2: calculate_matchup(s1, s2) for s2 in codes} for s1 in codes}
 
@@ -85,8 +89,8 @@ def observer_run(req: ObserverRunReq):
     # Identify-only：不做本地 fallback，無金鑰或呼叫失敗則回錯
     def resolve_provider(model: str | None) -> str | None:
         selected = (model or "").lower().strip()
-        if selected in ("deepseek", "deepseek-r1", "deepseek-r1-free"): return "openrouter"
-        if selected in ("4o-mini", "gpt-4o-mini", "openai"): return "openai"
+        if selected in ("deepseek", "deepseek-r1", "deepseek-r1-free", "openrouter"): return "openrouter"
+        if selected in ("4o-mini", "gpt-4o-mini", "openai", "gpt"): return "openai"
         from ...core.config import settings
         prov = (settings.MODEL_PROVIDER or "").lower().strip()
         if prov in ("openrouter", "deepseek"): return "openrouter"
@@ -212,7 +216,7 @@ def observer_run(req: ObserverRunReq):
 
 
 @router.get("/stream")
-def observer_run_stream(true_strategy1: str, true_strategy2: str, rounds: int = 50, warmup_rounds: int = 10, history_limit: int | None = None, reasoning_interval: int | None = 50, model: str | None = "deepseek"):
+def observer_run_stream(true_strategy1: str, true_strategy2: str, rounds: int = 50, warmup_rounds: int = 10, history_limit: int | None = None, reasoning_interval: int | None = 10, model: str | None = "deepseek"):
     """以 SSE 逐輪推送辨識與結果，便於前端即時展示。GET 參數對應 /observer/run。"""
     all_strategies = get_all_strategies()
     if true_strategy1 not in all_strategies or true_strategy2 not in all_strategies:
@@ -223,11 +227,6 @@ def observer_run_stream(true_strategy1: str, true_strategy2: str, rounds: int = 
     codes = list(all_strategies.keys())
     matrix = {s1: {s2: calculate_matchup(s1, s2) for s2 in codes} for s1 in codes}
 
-    dynamic_rules = {
-        'X': '出剋制對手上一輪的拳（若對手上一輪偏剪刀，則我偏石頭；依此類推）',
-        'Y': '出會被對手上一輪剋制的拳（若對手上一輪偏剪刀，則我偏布；依此類推）',
-        'Z': '出與對手上一輪相同的拳（跟隨對手上一輪分佈）',
-    }
     strategy_catalog = {}
     for k, v in BASE_STRATEGIES.items():
         strategy_catalog[k] = {
@@ -235,12 +234,13 @@ def observer_run_stream(true_strategy1: str, true_strategy2: str, rounds: int = 
             'name': v['name'],
             'dist': {'rock': v['rock'], 'paper': v['paper'], 'scissors': v['scissors']},
         }
-    for k, v in DYNAMIC_STRATEGIES.items():
-        strategy_catalog[k] = {
-            'type': 'dynamic',
-            'name': v['name'],
-            'rule': dynamic_rules.get(k, ''),
-        }
+    if settings.USE_DYNAMIC_STRATEGIES:
+        for k, v in DYNAMIC_STRATEGIES.items():
+            strategy_catalog[k] = {
+                'type': 'dynamic',
+                'name': v['name'],
+                'rule': v['rule'],
+            }
 
     def current_dists(k1: str, k2: str):
         is_base1 = k1 in BASE_STRATEGIES
@@ -263,10 +263,10 @@ def observer_run_stream(true_strategy1: str, true_strategy2: str, rounds: int = 
         selected = (model or "").lower().strip()
         if selected in ("deepseek", "deepseek-r1", "deepseek-r1-free"): return "openrouter"
         if selected in ("4o-mini", "gpt-4o-mini", "openai"): return "openai"
-        from ...core.config import settings
-        prov = (settings.MODEL_PROVIDER or "").lower().strip()
-        if prov in ("openrouter", "deepseek"): return "openrouter"
-        if prov in ("openai", "gpt-4o-mini"): return "openai"
+        # from ...core.config import settings
+        # prov = (settings.MODEL_PROVIDER or "").lower().strip()
+        # if prov in ("openrouter", "deepseek"): return "openrouter"
+        # if prov in ("openai", "gpt-4o-mini"): return "openai"
         return None
 
     def ensure_ident_available_for(provider: str | None):
@@ -288,9 +288,12 @@ def observer_run_stream(true_strategy1: str, true_strategy2: str, rounds: int = 
         nonlocal last_union_loss
         last_guess_s1 = None
         last_guess_s2 = None
-        # 初始事件：提供策略名稱對照，便於前端顯示（可選）
-        init_payload = {"strategy_names": strategy_names}
-        yield "event: init\n" + "data: " + json.dumps(init_payload, ensure_ascii=False) + "\n\n"
+        # 早停統計
+        consecutive_same = 0
+        prev_guess_s1 = None
+        prev_guess_s2 = None
+        losses_series: list[float] = []
+        EARLY_STOP_N = 15
 
         for r in range(1, int(rounds) + 1):
             dist1, dist2 = current_dists(k1_true, k2_true)
@@ -305,13 +308,8 @@ def observer_run_stream(true_strategy1: str, true_strategy2: str, rounds: int = 
             delta = None
             extra_conf = None
             extra_reason = None
-            # 額外輸出：與前端約定的代碼/名稱欄位（若無辨識則為 None）
-            guess_s1_code = None
-            guess_s1_name = None
-            guess_s2_code = None
-            guess_s2_name = None
-
             if r > (warmup_rounds or 0):
+                print(r)
                 hw = history
                 try:
                     base_round = len(history) - len(hw) + 1
@@ -322,32 +320,52 @@ def observer_run_stream(true_strategy1: str, true_strategy2: str, rounds: int = 
                     # 應用 history_limit（若設定），只保留最近 N 筆
                     if history_limit and history_limit > 0:
                         hist_json = hist_json[-int(history_limit):]
+                    print("hist_json", hist_json)
                     from ...services.llm import identify_from_history
-                    include_reason = (r % (reasoning_interval or 50) == 0 or r == rounds)
+                    include_reason = (r % (reasoning_interval or 10) == 0 or r == rounds)
                     provider = resolve_provider(model)
+                    print("provider", provider)
                     ensure_ident_available_for(provider)
+                    print("model", model)
                     ident = identify_from_history(strategy_catalog, hist_json, model, include_reasoning=include_reason)
+                    print("ident1", ident)
                 except Exception as e:
+                    print("error", e)
                     ident = None
                     err_msg = str(e)
+                print("ident2", ident)
+                if ident:
+                    # 兼容：s1_probs/s2_probs 可能是 dict，也可能是單一代碼（字串）。
+                    s1_code = ident.get("s1_code") or None
+                    s2_code = ident.get("s2_code") or None
+                    s1_probs_raw = ident.get("s1_probs")
+                    s2_probs_raw = ident.get("s2_probs")
+                    if not s1_code:
+                        if isinstance(s1_probs_raw, dict) and s1_probs_raw:
+                            s1_code = max(s1_probs_raw.items(), key=lambda x: x[1])[0]
+                        elif isinstance(s1_probs_raw, str) and s1_probs_raw:
+                            s1_code = s1_probs_raw
+                    if not s2_code:
+                        if isinstance(s2_probs_raw, dict) and s2_probs_raw:
+                            s2_code = max(s2_probs_raw.items(), key=lambda x: x[1])[0]
+                        elif isinstance(s2_probs_raw, str) and s2_probs_raw:
+                            s2_code = s2_probs_raw
 
-                if ident and ident.get('s1_code') in codes and ident.get('s2_code') in codes:
-                    s1_probs = {c: 0.0 for c in codes}; s1_probs[ident['s1_code']] = 1.0
-                    s2_probs = {c: 0.0 for c in codes}; s2_probs[ident['s2_code']] = 1.0
-                    guess_s1 = StrategyProbs(probs=s1_probs, top1=ident['s1_code'])
-                    guess_s2 = StrategyProbs(probs=s2_probs, top1=ident['s2_code'])
-                    best_pair = (ident['s1_code'], ident['s2_code'])
-                    extra_conf = float(ident.get('confidence') or 0.6)
-                    extra_reason = (ident.get('reasoning') or None) if (r % (reasoning_interval or 50) == 0 or r == rounds) else None
-                    # 帶出代碼/名稱
-                    guess_s1_code = ident.get('s1_code')
-                    guess_s1_name = ident.get('s1_name')
-                    guess_s2_code = ident.get('s2_code')
-                    guess_s2_name = ident.get('s2_name')
+                    # 只回傳單一代碼（不再輸出 probs 至前端）
+                    guess_s1_code = s1_code or None
+                    guess_s2_code = s2_code or None
+
+                    best_pair = (s1_code, s2_code)
+                    extra_conf = float(ident.get("confidence") or 0.6)
+                    extra_reason = (
+                        (ident.get("reasoning") or None)
+                        if (r % (reasoning_interval or 50) == 0 or r == rounds)
+                        else None
+                    )
                 else:
                     # 輕量降級：無辨識結果時，當輪不報錯，僅回傳空猜測
-                    guess_s1 = None
-                    guess_s2 = None
+                    guess_s1_code = None
+                    guess_s2_code = None
                     best_pair = (None, None)
                     extra_conf = None
                     extra_reason = None
@@ -358,26 +376,27 @@ def observer_run_stream(true_strategy1: str, true_strategy2: str, rounds: int = 
                     union_loss = compute_union_loss(true_dist, pred_dist)
                     delta = None if r == (warmup_rounds or 0) + 1 else (union_loss - last_union_loss)
                     last_union_loss = union_loss
+                    try:
+                        losses_series.append(float(union_loss))
+                    except Exception:
+                        pass
                 else:
                     union_loss = None
                     delta = None
 
-            # 紀錄本輪最後的猜測（即使在 warmup，也保留 None）
-            last_guess_s1 = guess_s1
-            last_guess_s2 = guess_s2
+            # 紀錄本輪最後的猜測（以單一代碼字串；即使在 warmup，也保留 None）
+            curr_guess_s1 = locals().get('guess_s1_code')
+            curr_guess_s2 = locals().get('guess_s2_code')
+            last_guess_s1 = curr_guess_s1
+            last_guess_s2 = curr_guess_s2
 
             rr_payload = {
                 'round': r,
                 'move1': m1,
                 'move2': m2,
                 'result': res,
-                'guess_s1': guess_s1.dict() if guess_s1 else None,
-                'guess_s2': guess_s2.dict() if guess_s2 else None,
-                # 兼容期望的扁平欄位（若有 LLM 輸出則提供）
-                'guess_s1_code': guess_s1_code,
-                'guess_s1_name': guess_s1_name,
-                'guess_s2_code': guess_s2_code,
-                'guess_s2_name': guess_s2_name,
+                'guess_s1': last_guess_s1,
+                'guess_s2': last_guess_s2,
                 'union_loss': union_loss,
                 'delta': delta,
                 'confidence': extra_conf,
@@ -386,11 +405,51 @@ def observer_run_stream(true_strategy1: str, true_strategy2: str, rounds: int = 
             }
             yield "event: round\n" + "data: " + json.dumps(rr_payload, ensure_ascii=False) + "\n\n"
 
-        # 最終彙總
-        final_guess = {'s1': last_guess_s1.top1 if last_guess_s1 else '', 's2': last_guess_s2.top1 if last_guess_s2 else ''}
+            # 早停：在 warmup 之後，若連續 EARLY_STOP_N 輪猜測相同（s1、s2 皆相同），提前結束
+            early_stop = False
+            if r > (warmup_rounds or 0) and curr_guess_s1 and curr_guess_s2:
+                if prev_guess_s1 == curr_guess_s1 and prev_guess_s2 == curr_guess_s2:
+                    consecutive_same += 1
+                else:
+                    consecutive_same = 1
+                prev_guess_s1 = curr_guess_s1
+                prev_guess_s2 = curr_guess_s2
+                if consecutive_same >= EARLY_STOP_N:
+                    early_stop = True
+            else:
+                # 尚未開始辨識或沒有猜測時重置
+                consecutive_same = 0 if r <= (warmup_rounds or 0) else consecutive_same
+
+            if early_stop:
+                trend = {}
+                if losses_series:
+                    trend['last'] = losses_series[-1]
+                    trend['min'] = min(losses_series)
+                    trend['avg_5'] = sum(losses_series[-5:]) / min(5, len(losses_series))
+                final_guess = {'s1': curr_guess_s1 or '', 's2': curr_guess_s2 or ''}
+                final_payload = {
+                    'model': model,
+                    'true_strategy1': k1_true,
+                    'true_strategy2': k2_true,
+                    'rounds': r,
+                    'warmup_rounds': warmup_rounds,
+                    'history_limit': history_limit,
+                    'reasoning_interval': reasoning_interval,
+                    'final_guess': final_guess,
+                    'trend': trend,
+                    'early_stop': True,
+                    'early_stop_round': r,
+                }
+                yield "event: final\n" + "data: " + json.dumps(final_payload, ensure_ascii=False) + "\n\n"
+                return
+
+        # 最終彙總（常規結束）
+        final_guess = {'s1': (last_guess_s1 or ''), 's2': (last_guess_s2 or '')}
         trend = {}
-        if last_union_loss:
-            trend['last'] = last_union_loss
+        if losses_series:
+            trend['last'] = losses_series[-1]
+            trend['min'] = min(losses_series)
+            trend['avg_5'] = sum(losses_series[-5:]) / min(5, len(losses_series))
         yield "event: final\n" + "data: " + json.dumps({
             'model': model,
             'true_strategy1': k1_true,

@@ -41,4 +41,7 @@ class Settings:
     # 送往 LLM 的 prompt 檔案輸出目錄（相對路徑以 backend/ 為基準），預設 backend/logs/llm
     LLM_LOG_DIR: str = os.getenv("LLM_LOG_DIR", "logs/llm")
 
+    # 是否啟用動態策略（X/Y/Z 等）；若關閉，prompt 與候選僅包含靜態策略
+    USE_DYNAMIC_STRATEGIES: bool = (os.getenv("USE_DYNAMIC_STRATEGIES", "1").lower() in ("1", "true", "yes", "y"))
+
 settings = Settings()

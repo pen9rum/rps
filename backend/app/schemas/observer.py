@@ -11,8 +11,9 @@ from pydantic import BaseModel
 from typing import Dict, List, Optional
 
 class StrategyProbs(BaseModel):
-    probs: Dict[str, float]   # A..Z 的機率
-    top1: str                 # 機率最高的策略代碼
+    # 若後端改為只回傳單一代碼，前端 SSE 直接傳字串，不再用此模型於串流欄位
+    probs: Dict[str, float]
+    top1: str
 
 class ObserverRunReq(BaseModel):
     true_strategy1: str
@@ -29,8 +30,9 @@ class RoundRecord(BaseModel):
     move2: int
     result: int               # 1 / 0 / -1 (對 s1 而言)
     # NOTE: 第 11 輪後才會填入模型辨識結果；前 10 輪 warmup 期間為 None
-    guess_s1: Optional[StrategyProbs] = None
-    guess_s2: Optional[StrategyProbs] = None
+    # 串流輸出現改為單一代碼字串
+    guess_s1: Optional[str] = None
+    guess_s2: Optional[str] = None
     union_loss: Optional[float] = None
     delta: Optional[float] = None      # 相較上一輪 union_loss 的變化（負值=變好）
     confidence: Optional[float] = None
