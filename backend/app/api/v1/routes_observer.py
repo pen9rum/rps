@@ -1,22 +1,20 @@
 """
 觀察者（Observer）API
 
-本模組現在同時承擔：
-- 單次配對分佈預測（/observer/predict）
-- 逐輪「觀察 + 辨識」主流程（/observer/run）
+本模組提供逐輪「觀察 + 辨識」主流程（/observer/run, /observer/stream）
 
 更新重點：
-- /observer/run 已改為：前 warmup 回合只蒐集歷史；第 11 輪起，每輪輸出對「雙邊策略的辨識結果」與 union_loss
+- /observer/run 已改為：前 warmup 回合只蒐集歷史；第 warmup+1 輪起，每輪輸出對「雙邊策略的辨識結果」與 union_loss
 - union_loss 以 backend/app/domain/metrics.py 中 CE/Brier/EV 三者平均為準
 """
 
 from fastapi import APIRouter, HTTPException
+import os
 from fastapi.responses import StreamingResponse
 from ...schemas.observer import (
-    ObserverPredictReq, ObserverPredictResp,
     ObserverRunReq, ObserverRunResp, RoundRecord, StrategyProbs
 )
-from ...services.llm import estimate_payoff, identify_from_history
+from ...services.llm import identify_from_history
 from ...domain.strategies import (
     get_all_strategies, get_strategy_names,
     calculate_matchup, beats,
@@ -26,38 +24,6 @@ from ...domain.strategies import (
 from ...domain.metrics import compute_union_loss
 
 router = APIRouter(prefix="/observer", tags=["observer"])
-
-@router.post("/predict", response_model=ObserverPredictResp)
-def observer_predict(req: ObserverPredictReq):
-    """觀察者預測端點"""
-    # 驗證輸入
-    if req.strategy1 and req.strategy2:
-        # 使用策略代碼
-        all_strategies = get_all_strategies()
-        if req.strategy1 not in all_strategies:
-            raise HTTPException(status_code=400, detail=f"策略 {req.strategy1} 不存在")
-        if req.strategy2 not in all_strategies:
-            raise HTTPException(status_code=400, detail=f"策略 {req.strategy2} 不存在")
-        
-        # 將策略代碼轉換為描述
-        description_s1 = all_strategies[req.strategy1]['name']
-        description_s2 = all_strategies[req.strategy2]['name']
-    elif req.description_s1 and req.description_s2:
-        # 使用描述文字
-        description_s1 = req.description_s1
-        description_s2 = req.description_s2
-    else:
-        raise HTTPException(
-            status_code=400, 
-            detail="必須提供策略代碼 (strategy1, strategy2) 或描述文字 (description_s1, description_s2)"
-        )
-    
-    # 調用 LLM 服務進行預測
-    try:
-        result = estimate_payoff(description_s1, description_s2, req.prompt_style, req.model)
-        return ObserverPredictResp(**result)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"預測失敗: {str(e)}")
 
 
 @router.post("/run", response_model=ObserverRunResp)
@@ -116,54 +82,27 @@ def observer_run(req: ObserverRunReq):
     def sample_move(dist):
         return random.choices([0,1,2], weights=[dist['rock'], dist['paper'], dist['scissors']])[0]
 
-    # 便捷：由一段歷史估計「經驗勝負平分佈」（百分比，與矩陣格式一致）
-    def empirical_dist(hist):
-        if not hist:
-            return {'wins': 33.3, 'losses': 33.3, 'draws': 33.4}
-        wins = sum(1 for _,_,r in hist if r == 1)
-        losses = sum(1 for _,_,r in hist if r == -1)
-        draws = sum(1 for _,_,r in hist if r == 0)
-        total = max(1, wins + losses + draws)
-        return {
-            'wins': wins * 100.0 / total,
-            'losses': losses * 100.0 / total,
-            'draws': draws * 100.0 / total,
-        }
+    # Identify-only：不做本地 fallback，無金鑰或呼叫失敗則回錯
+    def resolve_provider(model: str | None) -> str | None:
+        selected = (model or "").lower().strip()
+        if selected in ("deepseek", "deepseek-r1", "deepseek-r1-free"): return "openrouter"
+        if selected in ("4o-mini", "gpt-4o-mini", "openai"): return "openai"
+        from ...core.config import settings
+        prov = (settings.MODEL_PROVIDER or "").lower().strip()
+        if prov in ("openrouter", "deepseek"): return "openrouter"
+        if prov in ("openai", "gpt-4o-mini"): return "openai"
+        return None
 
-    # 便捷：根據歷史用「loss 加權」產生雙邊機率並選擇最可能的組合
-    def fallback_identify(hist_window):
-        ed = empirical_dist(hist_window)
-        # 對所有 (s1,s2) 計算 union_loss，分數越小越好
-        pair_losses = {}
-        for s1 in codes:
-            for s2 in codes:
-                loss = compute_union_loss(ed, matrix[s1][s2])
-                pair_losses[(s1, s2)] = loss
-        # 轉為權重（softmax on -loss）
-        tau = 0.5
-        import math
-        weights = {p: math.exp(-pair_losses[p]/tau) for p in pair_losses}
-        z = sum(weights.values()) or 1.0
-        weights = {p: w/z for p, w in weights.items()}
-        # 邊際化為左右機率
-        s1_probs = {c: 0.0 for c in codes}
-        s2_probs = {c: 0.0 for c in codes}
-        for (s1, s2), w in weights.items():
-            s1_probs[s1] += w
-            s2_probs[s2] += w
-        # 取最可能的成對（直接用最小 loss 的組合作為 top-1）
-        best_pair = min(pair_losses, key=pair_losses.get)
-        top_s1, top_s2 = best_pair
-        # 正規化（保險）
-        sum1 = sum(s1_probs.values()) or 1.0
-        sum2 = sum(s2_probs.values()) or 1.0
-        s1_probs = {k: v/sum1 for k, v in s1_probs.items()}
-        s2_probs = {k: v/sum2 for k, v in s2_probs.items()}
-        return (
-            StrategyProbs(probs=s1_probs, top1=top_s1),
-            StrategyProbs(probs=s2_probs, top1=top_s2),
-            best_pair
-        )
+    def ensure_ident_available_for(provider: str | None):
+        from ...core.config import settings
+        if provider == "openai":
+            if not settings.OPENAI_API_KEY:
+                raise HTTPException(status_code=503, detail="LLM unavailable: OPENAI_API_KEY missing")
+        elif provider == "openrouter":
+            if not os.getenv("OPENROUTER_API_KEY"):
+                raise HTTPException(status_code=503, detail="LLM unavailable: OPENROUTER_API_KEY missing")
+        else:
+            raise HTTPException(status_code=503, detail="LLM unavailable: no valid provider (set MODEL_PROVIDER or pass model)")
 
     k1_true, k2_true = req.true_strategy1, req.true_strategy2
     history = []  # [(move1, move2, result)]
@@ -183,8 +122,8 @@ def observer_run(req: ObserverRunReq):
             per_round.append(RoundRecord(round=r, move1=m1, move2=m2, result=res))
             continue
 
-        # 3) 取 k-window 歷史做辨識（含本輪）
-        hw = history[-req.k_window:] if req.k_window else history
+        # 3) 使用完整歷史做辨識（含本輪）
+        hw = history
         # 嘗試 LLM 辨識（包含策略代號表與逐輪出拳/結果）
         try:
             # 構建 JSON 歷史，使 LLM 明確知悉每輪數據
@@ -193,9 +132,16 @@ def observer_run(req: ObserverRunReq):
                 {"round": base_round + i, "move1": m1, "move2": m2, "result": res}
                 for i, (m1, m2, res) in enumerate(hw)
             ]
-            ident = identify_from_history(strategy_catalog, hist_json, req.model)
-        except Exception:
+            # 應用 history_limit（若設定），只保留最近 N 筆
+            if req.history_limit and req.history_limit > 0:
+                hist_json = hist_json[-int(req.history_limit):]
+            include_reason = (r % (req.reasoning_interval or 50) == 0 or r == req.rounds)
+            provider = resolve_provider(req.model)
+            ensure_ident_available_for(provider)
+            ident = identify_from_history(strategy_catalog, hist_json, req.model, include_reasoning=include_reason)
+        except Exception as e:
             ident = None
+            err_msg = str(e)
 
         if ident and ident.get('s1_code') in codes and ident.get('s2_code') in codes:
             # 以 LLM 結果建立一熱分佈（便於前端顯示百分比）
@@ -205,19 +151,26 @@ def observer_run(req: ObserverRunReq):
             guess_s2 = StrategyProbs(probs=s2_probs, top1=ident['s2_code'])
             best_pair = (ident['s1_code'], ident['s2_code'])
             extra_conf = float(ident.get('confidence') or 0.6)
-            extra_reason = ident.get('reasoning') or None
+            # 僅在指定間隔回傳 reasoning，減少 token 使用
+            extra_reason = (ident.get('reasoning') or None) if (r % (req.reasoning_interval or 50) == 0 or r == req.rounds) else None
         else:
-            # LLM 無法辨識或失敗，回退本地辨識
-            guess_s1, guess_s2, best_pair = fallback_identify(hw)
+            # 輕量降級：無辨識結果時，當輪不報錯，僅回傳空猜測
+            guess_s1 = None
+            guess_s2 = None
+            best_pair = (None, None)
             extra_conf = None
             extra_reason = None
 
         # 4) 以真實 vs 猜測 top-1 組合計 union_loss
         true_dist = matrix[k1_true][k2_true]
-        pred_dist = matrix[best_pair[0]][best_pair[1]]
-        union_loss = compute_union_loss(true_dist, pred_dist)
-        delta = None if r == (req.warmup_rounds or 0) + 1 else (union_loss - last_union_loss)
-        last_union_loss = union_loss
+        if best_pair[0] and best_pair[1]:
+            pred_dist = matrix[best_pair[0]][best_pair[1]]
+            union_loss = compute_union_loss(true_dist, pred_dist)
+            delta = None if r == (req.warmup_rounds or 0) + 1 else (union_loss - last_union_loss)
+            last_union_loss = union_loss
+        else:
+            union_loss = None
+            delta = None
 
         per_round.append(RoundRecord(
             round=r,
@@ -230,6 +183,7 @@ def observer_run(req: ObserverRunReq):
             delta=delta,
             confidence=extra_conf,
             reasoning=extra_reason,
+            history_used=len(hist_json) if (r > (req.warmup_rounds or 0)) else None,
         ))
 
     # 趨勢摘要
@@ -249,7 +203,8 @@ def observer_run(req: ObserverRunReq):
         true_strategy2=k2_true,
         rounds=req.rounds,
         warmup_rounds=req.warmup_rounds,
-        k_window=req.k_window,
+        history_limit=req.history_limit,
+        reasoning_interval=req.reasoning_interval,
         per_round=per_round,
         trend=trend,
         final_guess=final_guess,
@@ -257,7 +212,7 @@ def observer_run(req: ObserverRunReq):
 
 
 @router.get("/stream")
-def observer_run_stream(true_strategy1: str, true_strategy2: str, rounds: int = 50, warmup_rounds: int = 10, k_window: int | None = None, model: str | None = "deepseek"):
+def observer_run_stream(true_strategy1: str, true_strategy2: str, rounds: int = 50, warmup_rounds: int = 10, history_limit: int | None = None, reasoning_interval: int | None = 50, model: str | None = "deepseek"):
     """以 SSE 逐輪推送辨識與結果，便於前端即時展示。GET 參數對應 /observer/run。"""
     all_strategies = get_all_strategies()
     if true_strategy1 not in all_strategies or true_strategy2 not in all_strategies:
@@ -304,48 +259,26 @@ def observer_run_stream(true_strategy1: str, true_strategy2: str, rounds: int = 
     def sample_move(dist):
         return random.choices([0,1,2], weights=[dist['rock'], dist['paper'], dist['scissors']])[0]
 
-    def empirical_dist(hist):
-        if not hist:
-            return {'wins': 33.3, 'losses': 33.3, 'draws': 33.4}
-        wins = sum(1 for _,_,r in hist if r == 1)
-        losses = sum(1 for _,_,r in hist if r == -1)
-        draws = sum(1 for _,_,r in hist if r == 0)
-        total = max(1, wins + losses + draws)
-        return {
-            'wins': wins * 100.0 / total,
-            'losses': losses * 100.0 / total,
-            'draws': draws * 100.0 / total,
-        }
+    def resolve_provider(model: str | None) -> str | None:
+        selected = (model or "").lower().strip()
+        if selected in ("deepseek", "deepseek-r1", "deepseek-r1-free"): return "openrouter"
+        if selected in ("4o-mini", "gpt-4o-mini", "openai"): return "openai"
+        from ...core.config import settings
+        prov = (settings.MODEL_PROVIDER or "").lower().strip()
+        if prov in ("openrouter", "deepseek"): return "openrouter"
+        if prov in ("openai", "gpt-4o-mini"): return "openai"
+        return None
 
-    def fallback_identify(hist_window):
-        ed = empirical_dist(hist_window)
-        pair_losses = {}
-        for s1 in codes:
-            for s2 in codes:
-                loss = compute_union_loss(ed, matrix[s1][s2])
-                pair_losses[(s1, s2)] = loss
-        # softmax on -loss
-        tau = 0.5
-        import math
-        weights = {p: math.exp(-pair_losses[p]/tau) for p in pair_losses}
-        z = sum(weights.values()) or 1.0
-        weights = {p: w/z for p, w in weights.items()}
-        s1_probs = {c: 0.0 for c in codes}
-        s2_probs = {c: 0.0 for c in codes}
-        for (s1, s2), w in weights.items():
-            s1_probs[s1] += w
-            s2_probs[s2] += w
-        best_pair = min(pair_losses, key=pair_losses.get)
-        top_s1, top_s2 = best_pair
-        sum1 = sum(s1_probs.values()) or 1.0
-        sum2 = sum(s2_probs.values()) or 1.0
-        s1_probs = {k: v/sum1 for k, v in s1_probs.items()}
-        s2_probs = {k: v/sum2 for k, v in s2_probs.items()}
-        return (
-            StrategyProbs(probs=s1_probs, top1=top_s1),
-            StrategyProbs(probs=s2_probs, top1=top_s2),
-            best_pair
-        )
+    def ensure_ident_available_for(provider: str | None):
+        from ...core.config import settings
+        if provider == "openai":
+            if not settings.OPENAI_API_KEY:
+                raise HTTPException(status_code=503, detail="LLM unavailable: OPENAI_API_KEY missing")
+        elif provider == "openrouter":
+            if not os.getenv("OPENROUTER_API_KEY"):
+                raise HTTPException(status_code=503, detail="LLM unavailable: OPENROUTER_API_KEY missing")
+        else:
+            raise HTTPException(status_code=503, detail="LLM unavailable: no valid provider (set MODEL_PROVIDER or pass model)")
 
     k1_true, k2_true = true_strategy1, true_strategy2
     history = []
@@ -372,19 +305,31 @@ def observer_run_stream(true_strategy1: str, true_strategy2: str, rounds: int = 
             delta = None
             extra_conf = None
             extra_reason = None
+            # 額外輸出：與前端約定的代碼/名稱欄位（若無辨識則為 None）
+            guess_s1_code = None
+            guess_s1_name = None
+            guess_s2_code = None
+            guess_s2_name = None
 
             if r > (warmup_rounds or 0):
-                hw = history[-k_window:] if k_window else history
+                hw = history
                 try:
                     base_round = len(history) - len(hw) + 1
                     hist_json = [
                         {"round": base_round + i, "move1": mm1, "move2": mm2, "result": rr}
                         for i, (mm1, mm2, rr) in enumerate(hw)
                     ]
+                    # 應用 history_limit（若設定），只保留最近 N 筆
+                    if history_limit and history_limit > 0:
+                        hist_json = hist_json[-int(history_limit):]
                     from ...services.llm import identify_from_history
-                    ident = identify_from_history(strategy_catalog, hist_json, model)
-                except Exception:
+                    include_reason = (r % (reasoning_interval or 50) == 0 or r == rounds)
+                    provider = resolve_provider(model)
+                    ensure_ident_available_for(provider)
+                    ident = identify_from_history(strategy_catalog, hist_json, model, include_reasoning=include_reason)
+                except Exception as e:
                     ident = None
+                    err_msg = str(e)
 
                 if ident and ident.get('s1_code') in codes and ident.get('s2_code') in codes:
                     s1_probs = {c: 0.0 for c in codes}; s1_probs[ident['s1_code']] = 1.0
@@ -393,17 +338,29 @@ def observer_run_stream(true_strategy1: str, true_strategy2: str, rounds: int = 
                     guess_s2 = StrategyProbs(probs=s2_probs, top1=ident['s2_code'])
                     best_pair = (ident['s1_code'], ident['s2_code'])
                     extra_conf = float(ident.get('confidence') or 0.6)
-                    extra_reason = ident.get('reasoning') or None
+                    extra_reason = (ident.get('reasoning') or None) if (r % (reasoning_interval or 50) == 0 or r == rounds) else None
+                    # 帶出代碼/名稱
+                    guess_s1_code = ident.get('s1_code')
+                    guess_s1_name = ident.get('s1_name')
+                    guess_s2_code = ident.get('s2_code')
+                    guess_s2_name = ident.get('s2_name')
                 else:
-                    guess_s1, guess_s2, best_pair = fallback_identify(hw)
+                    # 輕量降級：無辨識結果時，當輪不報錯，僅回傳空猜測
+                    guess_s1 = None
+                    guess_s2 = None
+                    best_pair = (None, None)
                     extra_conf = None
                     extra_reason = None
 
                 true_dist = matrix[k1_true][k2_true]
-                pred_dist = matrix[best_pair[0]][best_pair[1]]
-                union_loss = compute_union_loss(true_dist, pred_dist)
-                delta = None if r == (warmup_rounds or 0) + 1 else (union_loss - last_union_loss)
-                last_union_loss = union_loss
+                if best_pair[0] and best_pair[1]:
+                    pred_dist = matrix[best_pair[0]][best_pair[1]]
+                    union_loss = compute_union_loss(true_dist, pred_dist)
+                    delta = None if r == (warmup_rounds or 0) + 1 else (union_loss - last_union_loss)
+                    last_union_loss = union_loss
+                else:
+                    union_loss = None
+                    delta = None
 
             # 紀錄本輪最後的猜測（即使在 warmup，也保留 None）
             last_guess_s1 = guess_s1
@@ -416,10 +373,16 @@ def observer_run_stream(true_strategy1: str, true_strategy2: str, rounds: int = 
                 'result': res,
                 'guess_s1': guess_s1.dict() if guess_s1 else None,
                 'guess_s2': guess_s2.dict() if guess_s2 else None,
+                # 兼容期望的扁平欄位（若有 LLM 輸出則提供）
+                'guess_s1_code': guess_s1_code,
+                'guess_s1_name': guess_s1_name,
+                'guess_s2_code': guess_s2_code,
+                'guess_s2_name': guess_s2_name,
                 'union_loss': union_loss,
                 'delta': delta,
                 'confidence': extra_conf,
                 'reasoning': extra_reason,
+                'history_used': (len(hist_json) if (r > (warmup_rounds or 0)) else None),
             }
             yield "event: round\n" + "data: " + json.dumps(rr_payload, ensure_ascii=False) + "\n\n"
 
@@ -434,7 +397,8 @@ def observer_run_stream(true_strategy1: str, true_strategy2: str, rounds: int = 
             'true_strategy2': k2_true,
             'rounds': rounds,
             'warmup_rounds': warmup_rounds,
-            'k_window': k_window,
+            'history_limit': history_limit,
+            'reasoning_interval': reasoning_interval,
             'final_guess': final_guess,
             'trend': trend,
         }, ensure_ascii=False) + "\n\n"

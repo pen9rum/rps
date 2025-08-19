@@ -10,7 +10,6 @@ FastAPI 主應用程式入口點
 API 端點：
 - GET /health - 健康檢查
 - POST /api/v1/simulate - 策略模擬
-- POST /api/v1/observer/predict - 觀察者預測
 - POST /api/v1/player/act - 玩家行動
 - POST /api/v1/evaluate - 評估指標
 - GET /api/v1/strategies/all - 獲取所有策略

@@ -151,23 +151,12 @@ curl -X POST http://127.0.0.1:8002/api/v1/simulate \
   }'
 ```
 
-### LLM 預測
-```bash
-curl -X POST http://127.0.0.1:8002/api/v1/observer/predict \
-  -H "Content-Type: application/json" \
-  -d '{
-    "description_s1": "頻率策略",
-    "description_s2": "隨機策略"
-  }'
-```
-
 ### 玩家決策
 ```bash
 curl -X POST http://127.0.0.1:8002/api/v1/player/act \
   -H "Content-Type: application/json" \
   -d '{
-    "history": [[0, 1], [1, 2], [2, 0]],
-    "k_window": 3
+    "history": [[0, 1], [1, 2], [2, 0]]
   }'
 ```
 

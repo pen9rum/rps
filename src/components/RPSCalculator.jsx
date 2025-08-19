@@ -1,34 +1,35 @@
 // src/components/RPSCalculator.jsx
 import React, { useState, useMemo } from 'react';
 import doraemonIcon from '../icon/doraemon.png';
+// import '../styles/custom.scss'
 
 const RPSCalculator = () => {
-  // --- 静态策略 A–P ---
+  // --- Static strategies A–P ---
   const baseStrategies = {
-    A: { name: 'A (纯剪刀)', rock: 0,   paper: 0,   scissors: 1   },
-    B: { name: 'B (纯石头)', rock: 1,   paper: 0,   scissors: 0   },
-    C: { name: 'C (纯布)',   rock: 0,   paper: 1,   scissors: 0   },
-    D: { name: 'D (随机)',   rock: 0.333, paper: 0.333, scissors: 0.334 },
-    E: { name: 'E (石头+布)', rock: 0.5, paper: 0.5,   scissors: 0   },
-    F: { name: 'F (石头+剪刀)', rock: 0.5, paper: 0,     scissors: 0.5 },
-    G: { name: 'G (布+剪刀)',   rock: 0,   paper: 0.5,   scissors: 0.5 },
-    H: { name: 'H (偏爱石头)', rock: 0.5, paper: 0.25,  scissors: 0.25 },
-    I: { name: 'I (偏爱布)',   rock: 0.25,paper: 0.5,   scissors: 0.25 },
-    J: { name: 'J (偏爱剪刀)', rock: 0.25,paper: 0.25,  scissors: 0.5 },
-    K: { name: 'K (石头主布次)', rock: 0.5, paper: 0.333, scissors: 0.167 },
-    L: { name: 'L (石头主剪次)', rock: 0.5, paper: 0.167, scissors: 0.333 },
-    M: { name: 'M (布主石次)',   rock: 0.333,paper: 0.5,   scissors: 0.167 },
-    N: { name: 'N (布主剪次)',   rock: 0.167,paper: 0.5,   scissors: 0.333 },
-    O: { name: 'O (剪主石次)',   rock: 0.333,paper: 0.167, scissors: 0.5   },
-    P: { name: 'P (剪主布次)',   rock: 0.167,paper: 0.333, scissors: 0.5   },
+    A: { name: 'A (pure Scissors)', rock: 0,   paper: 0,   scissors: 1   },
+    B: { name: 'B (pure Rock)',     rock: 1,   paper: 0,   scissors: 0   },
+    C: { name: 'C (pure Paper)',    rock: 0,   paper: 1,   scissors: 0   },
+    D: { name: 'D (random)',        rock: 0.333, paper: 0.333, scissors: 0.334 },
+    E: { name: 'E (Rock+Paper)',    rock: 0.5, paper: 0.5,   scissors: 0   },
+    F: { name: 'F (Rock+Scissors)', rock: 0.5, paper: 0,     scissors: 0.5 },
+    G: { name: 'G (Paper+Scissors)',rock: 0,   paper: 0.5,   scissors: 0.5 },
+    H: { name: 'H (Rock-biased)',   rock: 0.5, paper: 0.25,  scissors: 0.25 },
+    I: { name: 'I (Paper-biased)',  rock: 0.25,paper: 0.5,   scissors: 0.25 },
+    J: { name: 'J (Scissors-biased)', rock: 0.25,paper: 0.25,  scissors: 0.5 },
+    K: { name: 'K (Rock>Paper)',    rock: 0.5, paper: 0.333, scissors: 0.167 },
+    L: { name: 'L (Rock>Scissors)', rock: 0.5, paper: 0.167, scissors: 0.333 },
+    M: { name: 'M (Paper>Rock)',    rock: 0.333,paper: 0.5,   scissors: 0.167 },
+    N: { name: 'N (Paper>Scissors)',rock: 0.167,paper: 0.5,   scissors: 0.333 },
+    O: { name: 'O (Scissors>Rock)', rock: 0.333,paper: 0.167, scissors: 0.5   },
+    P: { name: 'P (Scissors>Paper)',rock: 0.167,paper: 0.333, scissors: 0.5   },
   };
 
-  // --- 动态策略 X/Y/Z ---
+  // --- Dynamic strategies X/Y/Z ---
   const strategies = {
     ...baseStrategies,
-    X: { name: 'X (赢前一拳)' },
-    Y: { name: 'Y (输前一拳)' },
-    Z: { name: 'Z (跟前一拳)' },
+    X: { name: 'X (Win vs last move)' },
+    Y: { name: 'Y (Lose vs last move)' },
+    Z: { name: 'Z (Follow last move)' },
   };
   const keys = Object.keys(strategies);
 
@@ -196,13 +197,13 @@ const RPSCalculator = () => {
   const fmt = v => `${v.toFixed(1)}%`;
 
   return (
-    <div className="max-w-7xl mx-auto p-6 bg-white shadow-lg rounded-lg">
+    <div className="max-w-7xl mx-auto p-6">
       <h1 className="text-3xl font-bold text-center mb-6 text-gray-800">
         🪨📄✂️ Tom 4 AI Evaluation on Gaming
       </h1>
       <hr className="my-4 border-gray-300" />
       <p className="mt-2 text-sm text-gray-600">
-        可查詢各角色的策略
+        Explore strategies and outcomes
       </p>
 
 
@@ -222,12 +223,10 @@ const RPSCalculator = () => {
         </div>
       </div>
       <hr className="my-4 border-gray-300" />
-      {/* Actual / Pred 选择 */}
+      {/* Actual / Pred selections */}
       <p className="mt-2 text-sm text-gray-600">
-        選擇 <strong>Actual A / Actual B</strong> 代表真實對戰的兩個策略，
-        上方顯示的勝/敗/平與 Loss function 會依此組合計算。
-        選擇 <strong>Pred A / Pred B</strong> 代表模型預測的兩個策略，
-        在矩陣中 Loss 的計算會固定使用這個預測分佈與每格真實分佈做比較。
+        Choose <strong>Actual A / Actual B</strong> as the true matchup. The win/lose/draw and losses above are computed from this.
+        Choose <strong>Pred A / Pred B</strong> as the model prediction used to compare against each true cell in the matrix.
       </p>
       <div className="mb-6 grid grid-cols-2 md:grid-cols-4 gap-4">
         {['Actual A','Actual B','Pred A','Pred B'].map((label, idx) => (
@@ -251,12 +250,12 @@ const RPSCalculator = () => {
         <p className="text-lg">
           Actual Win: <span className="font-semibold">{fmt(trueDist.wins)}</span> /
           Lose: <span className="font-semibold">{fmt(trueDist.losses)}</span> /
-          Even: <span className="font-semibold">{fmt(trueDist.draws)}</span>
+          Draw: <span className="font-semibold">{fmt(trueDist.draws)}</span>
         </p>
         <p className="mt-2 text-lg">
           Pred Win: <span className="font-semibold">{fmt(predDist.wins)}</span> /
           Lose: <span className="font-semibold">{fmt(predDist.losses)}</span> /
-          Even: <span className="font-semibold">{fmt(predDist.draws)}</span>
+          Draw: <span className="font-semibold">{fmt(predDist.draws)}</span>
         </p>
         <div className="mt-4 space-y-1">
           <p>Cross‐Entropy Loss: <span className="font-semibold">{ceLoss.toFixed(4)}</span>
@@ -273,15 +272,12 @@ const RPSCalculator = () => {
         </div>
       </div>
 
-      {/* 全矩阵对战 - 修改 loss 顯示，遵循標準化規則 */}
+      {/* Full matrix with normalized loss */}
       <hr className="my-4 border-gray-300" />
       <p className="mb-4 text-sm text-gray-600">
-        矩陣的每格顯示該行策略（真實 A）對該列策略（真實 B）的
-        <strong>真實勝率 / 敗率 / 平率</strong>，
-        以及與上方所選 <strong>Pred A / Pred B</strong> 預測分佈相比的
-        <strong>Union Loss（已正規化）</strong>。
-        前三行數值是純真實對戰結果，最後一行 N 值代表預測與真實的差距：
-        值越低代表預測越接近真實。
+        Each cell shows the true Win/Lose/Draw for row strategy (A) vs column strategy (B),
+        and the normalized Union Loss compared against the chosen Pred A/B above.
+        Lower N indicates the prediction is closer to the truth.
       </p>
       <div className="mb-4 flex items-center space-x-4">
         <label className="text-sm font-medium">Color Mode:</label>

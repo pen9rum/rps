@@ -62,9 +62,7 @@ rps/
 - **功能**: 執行策略對戰模擬
 
 #### `routes_observer.py` - 觀察者路由
-- **功能**: 觀察者預測 API
-- **端點**: `POST /api/v1/observer/predict`
-- **功能**: 使用 LLM 預測策略對戰結果
+- **功能**: 逐輪觀察 + 辨識（identify-only）
 
 #### `routes_strategies.py` - 策略計算路由
 - **功能**: 策略相關計算 API
@@ -128,7 +126,6 @@ rps/
   - `estimate_payoff()`: 主要預測函數
   - `call_openai_for_prediction()`: OpenAI API 調用
   - `analyze_strategy()`: 策略分析
-  - `fallback_prediction()`: 備用預測
 
 ### 資料模型層 (`app/schemas/`)
 
@@ -181,7 +178,6 @@ rps/
 - **功能**: 與後端 API 的統一介面
 - **主要函數**:
   - `simulate()`: 策略模擬
-  - `observerPredict()`: 觀察者預測
   - `calculateStrategyMatchup()`: 策略對戰
   - `calculateStrategyMatrix()`: 策略矩陣
   - `getAllStrategies()`: 獲取策略列表
@@ -237,7 +233,7 @@ echo "OPENAI_API_KEY=your_api_key_here" >> backend/.env
 |------|------|------|------|
 | GET | `/health` | 健康檢查 | 檢查服務狀態 |
 | POST | `/api/v1/simulate` | 策略模擬 | 執行策略對戰模擬 |
-| POST | `/api/v1/observer/predict` | 觀察者預測 | LLM 預測對戰結果 |
+|      |                            |            |                  |
 | POST | `/api/v1/strategies/matchup` | 策略對戰 | 計算兩個策略的對戰結果 |
 | POST | `/api/v1/strategies/matrix` | 策略矩陣 | 計算完整的策略矩陣 |
 | GET | `/api/v1/strategies/all` | 策略列表 | 獲取所有可用策略 |
