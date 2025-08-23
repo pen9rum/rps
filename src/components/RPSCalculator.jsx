@@ -3,6 +3,8 @@ import React, { useState, useMemo } from 'react';
 import doraemonIcon from '../icon/doraemon.png';
 
 const RPSCalculator = () => {
+  console.log('RPSCalculator component is rendering');
+  
   // --- 静态策略 A–P ---
   const baseStrategies = {
     A: { name: 'A (纯剪刀)', rock: 0,   paper: 0,   scissors: 1   },
@@ -126,30 +128,43 @@ const RPSCalculator = () => {
     return table;
   }, [keys]); // 只在 keys 改變時重新計算
 
-  const toProb = d => ({ win:d.wins/100, draw:d.draws/100, loss:d.losses/100 });
+  const toProb = d => {
+    if (!d) return { win: 0, draw: 0, loss: 0 };
+    return { win:d.wins/100, draw:d.draws/100, loss:d.losses/100 };
+  };
 
-  const computeCELoss = (t, p) =>
-    - (t.win  * Math.log(p.win  + 1e-12)
+  const computeCELoss = (t, p) => {
+    if (!t || !p) return 0;
+    return - (t.win  * Math.log(p.win  + 1e-12)
       + t.draw * Math.log(p.draw + 1e-12)
       + t.loss * Math.log(p.loss + 1e-12));
+  };
 
-  const computeBrier = (t, p) =>
-    (p.win - t.win)**2 + (p.draw - t.draw)**2 + (p.loss - t.loss)**2;
+  const computeBrier = (t, p) => {
+    if (!t || !p) return 0;
+    return (p.win - t.win)**2 + (p.draw - t.draw)**2 + (p.loss - t.loss)**2;
+  };
 
-  const computeEV    = d => (d.wins - d.losses)/100;
-  const computeEVLoss = (tDist, pDist) =>
-    Math.pow(computeEV(tDist) - computeEV(pDist), 2);
+  const computeEV    = d => {
+    if (!d) return 0;
+    return (d.wins - d.losses)/100;
+  };
+  const computeEVLoss = (tDist, pDist) => {
+    if (!tDist || !pDist) return 0;
+    return Math.pow(computeEV(tDist) - computeEV(pDist), 2);
+  };
 
   // --- 新增：Min-Max 標準化函數 ---
   const normalizeLoss = (loss, allLosses) => {
+    if (!allLosses || allLosses.length === 0) return 0.5;
     const min = Math.min(...allLosses);
     const max = Math.max(...allLosses);
     return max === min ? 0.5 : (loss - min) / (max - min);
   };
 
   // --- 新增：先計算當前的分佈與 loss ---
-  const trueDist  = allMatchups[actualA][actualB];
-  const predDist  = allMatchups[predA][predB];
+  const trueDist  = allMatchups[actualA]?.[actualB] || { wins: 0, losses: 0, draws: 0 };
+  const predDist  = allMatchups[predA]?.[predB] || { wins: 0, losses: 0, draws: 0 };
   const tProb     = toProb(trueDist);
   const pProb     = toProb(predDist);
 
@@ -162,7 +177,7 @@ const RPSCalculator = () => {
     const losses = [];
     keys.forEach(k1 => {
       keys.forEach(k2 => {
-        const t = allMatchups[k1][k2];
+        const t = allMatchups[k1]?.[k2] || { wins: 0, losses: 0, draws: 0 };
         const tP = toProb(t);
         const pP = pProb;
         const loss = (computeCELoss(tP, pP) + computeBrier(tP, pP) + computeEVLoss(t, predDist)) / 3;
@@ -172,16 +187,12 @@ const RPSCalculator = () => {
     return losses;
   }, [allMatchups, pProb, predDist]);
 
-  // --- 修改：EV Loss 固定上界標準化，Union Loss 繼續使用 min-max 標準化 ---
-  const normalizedEVLoss = evLoss / 1.0; // 固定上界標準化
-  const normalizedUnionLoss = normalizeLoss(unionLoss, allLosses); // 相對 min-max 標準化
-
   // --- 新增：Cross-Entropy Loss 的標準化（使用全矩陣 min-max） ---
   const allCELosses = useMemo(() => {
     const losses = [];
     keys.forEach(k1 => {
       keys.forEach(k2 => {
-        const t = allMatchups[k1][k2];
+        const t = allMatchups[k1]?.[k2] || { wins: 0, losses: 0, draws: 0 };
         const tP = toProb(t);
         const pP = pProb;
         const celoss = computeCELoss(tP, pP);
@@ -193,7 +204,14 @@ const RPSCalculator = () => {
 
   const normalizedCELoss = normalizeLoss(ceLoss, allCELosses); // 相對 min-max 標準化
 
-  const fmt = v => `${v.toFixed(1)}%`;
+  // --- 修改：EV Loss 固定上界標準化，Union Loss 繼續使用 min-max 標準化 ---
+  const normalizedEVLoss = evLoss / 4.0; // 固定上界標準化
+  const normalizedUnionLoss = (normalizedEVLoss + normalizedCELoss + brierLoss) / 3;
+
+  const fmt = v => {
+    if (isNaN(v) || !isFinite(v)) return '0.0%';
+    return `${v.toFixed(1)}%`;
+  };
 
   return (
     <div className="max-w-7xl mx-auto p-6 bg-white shadow-lg rounded-lg">
@@ -210,7 +228,7 @@ const RPSCalculator = () => {
       <div className="mb-6 flex items-center space-x-4">
         <label className="block text-sm font-medium">Strategy Dictionary:</label>
         <select
-          className="mt-1 rounded border-gray-300"
+          className="mt-1 block w-full rounded border-gray-300 px-3 py-2 text-sm"
           value={infoKey}
           onChange={e => setInfoKey(e.target.value)}
         >
@@ -283,7 +301,7 @@ const RPSCalculator = () => {
         前三行數值是純真實對戰結果，最後一行 N 值代表預測與真實的差距：
         值越低代表預測越接近真實。
       </p>
-      <div className="mb-4 flex items-center space-x-4">
+      <div className="mb-10 flex items-center space-x-4" style={{ marginBottom: '30px' }}>
         <label className="text-sm font-medium">Color Mode:</label>
         <button
           className={`px-3 py-1 rounded ${colorMode === 'winRate' ? 'bg-blue-500 text-white' : 'bg-gray-200'}`}
@@ -301,10 +319,10 @@ const RPSCalculator = () => {
       
 
       <div className="overflow-x-auto shadow-md rounded-lg">
-        <table className="min-w-full divide-y divide-gray-200 table-auto text-sm">
-          <thead className="sticky top-0 bg-blue-600">
+        <table className="min-w-full divide-y divide-gray-200 table-auto text-sm" style={{ marginBottom: '30px' }}>
+          <thead className="sticky top-0 bg-blue-600" style={{ marginBottom: '15px' }}>
             <tr>
-              <th className="px-4 py-3 text-left text-white font-medium uppercase sticky left-0 bg-blue-600 z-10">
+              <th className="px-4 py-3 text-center text-white font-medium uppercase sticky bg-blue-600 z-10">
                 Strategy
               </th>
               {keys.map(k => (
@@ -317,21 +335,19 @@ const RPSCalculator = () => {
           <tbody className="bg-white divide-y divide-gray-200">
             {keys.map(k1 => (
               <tr key={k1} className="hover:bg-gray-100 even:bg-gray-50">
-                <td className="px-4 py-2 font-semibold bg-gray-50 sticky left-0 z-10 whitespace-nowrap">
+                <td className="px-4 py-2 font-semibold bg-gray-50 sticky text-center z-10 whitespace-nowrap">
                   {k1}
                 </td>
                 {keys.map(k2 => {
-                  const t    = allMatchups[k1][k2];
+                  const t    = allMatchups[k1]?.[k2] || { wins: 0, losses: 0, draws: 0 };
                   const tP   = toProb(t);
                   const pP   = pProb;
-                  const loss = (computeCELoss(tP,pP)
-                                + computeBrier(tP,pP)
-                                + computeEVLoss(t,predDist)) / 3;
                   
-                  // 修改：遵循標準化規則 - EV Loss 用固定上界，Union Loss 用相對 min-max
+                  // 計算該格的標準化 Union Loss，使用與上方相同的邏輯
                   const evLossForCell = computeEVLoss(t, predDist);
-                  const normalizedEVLossForCell = evLossForCell / 1.0; // 固定上界標準化
-                  const normalizedUnionLossForCell = normalizeLoss(loss, allLosses); // 相對 min-max 標準化
+                  const normalizedEVLossForCell = evLossForCell / 4.0; // 固定上界標準化
+                  const normalizedCELossForCell = normalizeLoss(computeCELoss(tP, pP), allCELosses); // 相對 min-max 標準化
+                  const normalizedUnionLossForCell = (normalizedEVLossForCell + normalizedCELossForCell + computeBrier(tP, pP)) / 3;
                   
                   // 根據模式選擇顏色
                   let hue, bg;
@@ -339,7 +355,16 @@ const RPSCalculator = () => {
                     hue = Math.round((t.wins/100) * 120); // 勝率高越綠
                     bg = `hsl(${hue},70%,90%)`;
                   } else {
-                    hue = Math.round((1 - normalizedUnionLossForCell) * 120); // Loss 低越綠
+                    // Loss mode: 低於0.2是綠色，高於0.4是紅色
+                    if (normalizedUnionLossForCell <= 0.2) {
+                      hue = 120; // 綠色
+                    } else if (normalizedUnionLossForCell >= 0.3) {
+                      hue = 0;   // 紅色
+                    } else {
+                      // 0.2-0.4之間線性插值，從綠到紅
+                      const ratio = (normalizedUnionLossForCell - 0.2) / (0.4 - 0.2);
+                      hue = Math.round(120 * (1 - ratio)); // 120到0的線性插值
+                    }
                     bg = `hsl(${hue},70%,90%)`;
                   }
                   
@@ -354,7 +379,7 @@ const RPSCalculator = () => {
                       <div className="text-gray-500 text-xs">{fmt(t.draws)}</div>
                       {/* 修改：顯示 Union Loss 的標準化值（相對 min-max） */}
                       <div className="mt-1 text-[9px] text-blue-600 font-bold">
-                        N {normalizedUnionLossForCell.toFixed(2)}
+                        N {normalizedUnionLossForCell.toFixed(5)}
                       </div>
                     </td>
                   );
